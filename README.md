@@ -13,6 +13,13 @@
 
 Run a small distributed application, let Clutta learn its workflow, and deliberately stop one step. Follow the evidence in your own Clutta account, then repair the application and watch new work complete.
 
+## What you'll prove
+
+1. All three application services remain healthy.
+2. A workflow silently stops before its final step.
+3. Clutta identifies the exact incomplete payment and cites the evidence.
+4. You repair the application and verify fresh work completes.
+
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/sefastech/clutta-playground)
 
 [Read the one-page PDF](docs/clutta-walkthrough.pdf) · [Start the walkthrough](docs/onboarding.md) · [Open Clutta](https://app.clutta.io) · [Troubleshooting](docs/troubleshooting.md)
@@ -34,7 +41,18 @@ Payment accepted -> notification queued -> notification delivered
 
 The lab produces 600 distinct test payments and at least 500 ordinary log entries per watched service. No real money, payment provider, production access, application-side Clutta SDK, Kubernetes, or Slack setup is needed.
 
-## Start here
+## Choose your experience
+
+### Quick experience: a prepared guided session
+
+A host completes the [full setup](docs/onboarding.md) before the session: account and project connected, Codespace warm, real traffic generated, and the learned flow reviewed and activated by a human. The evaluator can follow the screen without creating an account first. The host keeps their key private.
+
+1. Run `./lab break`. Verify health stays green, then open the cited Case File for the stalled payment.
+2. Run `./lab repair`. Open a fresh completed run and compare it with the failure.
+
+This is the short first-look experience. The healthy controls and live Cloud checks still apply. It is not a shortcut around learning or approval, and failed checks must not be presented as success.
+
+### Full playground: prove it yourself
 
 Follow the [step-by-step guide](docs/onboarding.md). It covers signup, your workspace key, a dedicated project, and these four actions:
 
@@ -46,6 +64,12 @@ Follow the [step-by-step guide](docs/onboarding.md). It covers signup, your work
 Every step has a success check. Printed links open your own proposal, Case File, and monitored run. You make the approval decision; the scripts do not make it for you.
 
 Allow time for first-time image downloads and learning. A five-minute screen demonstration starts with setup already complete; it is not a five-minute cold-start guarantee. GitHub Codespaces usage is billed according to your account.
+
+### Your key and data
+
+Use a dedicated playground project and environment with a separate workspace key, never a production key. This lab does not require access to your production systems. It registers lab sources, uploads their evidence, and reads Scan results.
+
+The key is workspace-scoped, not project-scoped. Project routing does not narrow the key's permissions. If you need credential isolation from existing Clutta data, use a separate Clutta workspace. Required scopes and permission failures are covered in [troubleshooting](docs/troubleshooting.md).
 
 ## Scenarios and experiments
 

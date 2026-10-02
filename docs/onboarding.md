@@ -17,11 +17,13 @@ Follow each step only after its success check passes. All payments are fake; the
 
 ## 2. Prepare your connection
 
-1. Open [Access keys](https://app.clutta.io/access-keys), select an environment, and copy its workspace API key. Create an environment if the list is empty.
+1. Open [Access keys](https://app.clutta.io/access-keys), create a dedicated **Playground** environment, and copy its workspace API key. Do not use a production key.
 2. Open [Projects](https://app.clutta.io/projects), create **Scheduler lab**, then open **Connections**.
 3. Select the same environment. Copy the **Workspace ID** and **Project ID**. Wait for release verification.
 
 The key is your private pass; the project is where the lab's evidence appears. Use your own values. Never put the key in Git, chat, a command, or a recording.
+
+The key is workspace-scoped, not project-scoped. A dedicated project/environment does not limit its permissions to this lab. Use a separate Clutta workspace if you need isolation from existing data. The helper registers lab sources, uploads their evidence, and reads Scan results; it needs no production-system access.
 
 **Continue when:** you have the three connection values.
 

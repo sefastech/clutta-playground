@@ -74,8 +74,12 @@ test('the short PDF companion preserves the guided lab and public destinations',
   assert.match(read('README.md'), /\[Read the one-page PDF\]\(docs\/clutta-walkthrough\.pdf\)/);
   assert.match(source, /pdftitle=\{Clutta Walkthrough\}/);
   assert.match(source, /setmainfont\{Latin Modern Roman\}/);
-  assert.match(source, /\{HTML\}\{001A6E\}/);
-  assert.match(source, /\{HTML\}\{174AE5\}/);
+  const palette = [...source.matchAll(/\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}/g)].map((match) => match.slice(1));
+  assert.deepEqual(palette, [['blue', 'HTML', '001A6E']]);
+  for (const match of source.matchAll(/\\color\{([^}]+)\}|(?:draw|fill|text|color)=([a-zA-Z!0-9]+)/g)) {
+    assert.ok(['blue', 'black', 'white'].includes(match[1] ?? match[2]), `Unexpected PDF color: ${match[0]}`);
+  }
+  assert.match(source, /allbordercolors=blue/);
   for (const command of ['./lab start', './lab break', './lab repair', './lab stop']) {
     assert.ok(source.includes(command), `Missing guided action: ${command}`);
   }
@@ -91,6 +95,10 @@ test('the short PDF companion preserves the guided lab and public destinations',
   assert.match(source, /unknown root cause is not invented/);
   assert.match(source, /First-time setup and learning take longer/);
   assert.match(source, /fresh-account and resume checks remain open/);
+  assert.match(source, /Quick experience:/);
+  assert.match(source, /flow already reviewed and activated/);
+  assert.match(source, /Full playground:/);
+  assert.match(source, /workspace-scoped, not project-scoped/);
   assert.doesNotMatch(source, /\u2014|github\.com\/[^\s}]+-private|read:scan\.|write:scan\./);
   const pdf = readFileSync(path.join(repository, 'docs/clutta-walkthrough.pdf'));
   assert.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
@@ -98,4 +106,22 @@ test('the short PDF companion preserves the guided lab and public destinations',
   assert.ok(pdf.length < 1_000_000, 'Keep the short attachment small');
   assert.match(source, /bash scripts\/build-walkthrough\.sh/);
   assert.match(read('scripts/build-walkthrough.sh'), /if \[\[ "\$pages" != 1 \]\]/);
+});
+
+test('prepared demos keep approval gates and independent setup distinct, without implying project-scoped keys', () => {
+  const readme = read('README.md');
+  assert.ok(readme.indexOf('## What you\'ll prove') < readme.indexOf('github.com/codespaces/badge.svg'));
+  const quick = readme.split('### Quick experience:')[1].split('### Full playground:')[0];
+  assert.match(quick, /flow reviewed and activated by a human/);
+  assert.match(quick, /\.\/lab break/);
+  assert.match(quick, /\.\/lab repair/);
+  assert.match(quick, /healthy controls and live Cloud checks still apply/);
+  assert.match(quick, /host keeps their key private/);
+  for (const source of [readme, read('docs/onboarding.md')]) {
+    assert.match(source, /dedicated (?:\*\*Playground\*\* environment|playground project and environment)/);
+    assert.match(source, /workspace-scoped, not project-scoped/);
+    assert.match(source, /separate Clutta workspace/);
+    assert.match(source, /(?:never a|Do not use a) production key/);
+    assert.match(source, /registers lab sources, uploads their evidence, and reads Scan results/);
+  }
 });

@@ -15,7 +15,7 @@ Run a small distributed application, let Clutta learn its workflow, and delibera
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/sefastech/clutta-playground)
 
-[Start the walkthrough](docs/onboarding.md) · [Open Clutta](https://app.clutta.io) · [Troubleshooting](docs/troubleshooting.md)
+[Read the one-page PDF](docs/clutta-walkthrough.pdf) · [Start the walkthrough](docs/onboarding.md) · [Open Clutta](https://app.clutta.io) · [Troubleshooting](docs/troubleshooting.md)
 
 ## First lab: a healthy container hiding a stopped scheduler
 

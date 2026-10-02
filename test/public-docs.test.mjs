@@ -68,3 +68,34 @@ test('the catalogue admits future scenarios without promising unvalidated runtim
   assert.match(readme, /Fresh-account onboarding and rebuild\/resume preservation remain open/);
   assert.match(read('AGENTS.md'), /independently checked Clutta path before it is listed as runnable/);
 });
+
+test('the short PDF companion preserves the guided lab and public destinations', () => {
+  const source = read('docs/source/clutta-walkthrough.tex');
+  assert.match(read('README.md'), /\[Read the one-page PDF\]\(docs\/clutta-walkthrough\.pdf\)/);
+  assert.match(source, /pdftitle=\{Clutta Walkthrough\}/);
+  assert.match(source, /setmainfont\{Latin Modern Roman\}/);
+  assert.match(source, /\{HTML\}\{001A6E\}/);
+  assert.match(source, /\{HTML\}\{174AE5\}/);
+  for (const command of ['./lab start', './lab break', './lab repair', './lab stop']) {
+    assert.ok(source.includes(command), `Missing guided action: ${command}`);
+  }
+  for (const url of [
+    'https://app.clutta.io/signup',
+    'https://github.com/sefastech/clutta-playground/blob/main/docs/onboarding.md',
+    'https://codespaces.new/sefastech/clutta-playground',
+    'https://github.com/sefastech/clutta-playground',
+    'https://app.clutta.io/analyze',
+  ]) assert.ok(source.includes(`\\href{${url}}`), `Missing public destination: ${url}`);
+  assert.match(source, /approve and activate it yourself/);
+  assert.match(source, /earlier missed deadline remains in history/);
+  assert.match(source, /unknown root cause is not invented/);
+  assert.match(source, /First-time setup and learning take longer/);
+  assert.match(source, /fresh-account and resume checks remain open/);
+  assert.doesNotMatch(source, /\u2014|github\.com\/[^\s}]+-private|read:scan\.|write:scan\./);
+  const pdf = readFileSync(path.join(repository, 'docs/clutta-walkthrough.pdf'));
+  assert.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
+  assert.match(pdf.subarray(-128).toString('ascii'), /%%EOF\s*$/);
+  assert.ok(pdf.length < 1_000_000, 'Keep the short attachment small');
+  assert.match(source, /bash scripts\/build-walkthrough\.sh/);
+  assert.match(read('scripts/build-walkthrough.sh'), /if \[\[ "\$pages" != 1 \]\]/);
+});

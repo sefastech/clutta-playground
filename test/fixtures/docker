@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+
+// Offline command-contract fixture only. Never used by the lab runtime.
+const args = process.argv.slice(2);
+appendFileSync(process.env.LAB_TEST_CALLS, `${JSON.stringify({ args, inheritedKey: Boolean(process.env.CLUTTA_API_KEY) })}\n`);
+if (args[0] === 'container' && args[1] === 'ls') process.exit(0);
+if (args[0] === 'compose' && args.includes('down')) process.exit(0);
+if (args[0] === 'compose' && args.includes('exec')) {
+  console.log(JSON.stringify({ scheduler: { paused: false }, database: { pending: 0 }, health: { status: 'ok' } }));
+  process.exit(0);
+}
+console.error('Unexpected offline fixture Docker operation');
+process.exit(1);

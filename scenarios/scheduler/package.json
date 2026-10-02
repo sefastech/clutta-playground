@@ -1,0 +1,14 @@
+{
+  "name": "clutta-playground-scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/server.mjs && node --check src/store.mjs && node --check src/loop.mjs && node --check src/logger.mjs && node --check scripts/client.mjs && node --check scripts/verify.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": { "pg": "8.23.1" }
+}

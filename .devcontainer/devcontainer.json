@@ -1,0 +1,31 @@
+{
+  "name": "Clutta scheduler playground",
+  "build": { "dockerfile": "Dockerfile" },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker@sha256:ad3d6d36d95ee7f880f61f98862257f3e70253d3faef09f86af42fb87ee60429": {
+      "version": "29.4.3",
+      "moby": true,
+      "mobyBuildxVersion": "0.34.1",
+      "dockerDashComposeVersion": "v2",
+      "installDockerBuildx": false,
+      "installDockerComposeSwitch": false
+    }
+  },
+  "remoteUser": "node",
+  "hostRequirements": { "cpus": 2, "memory": "4gb", "storage": "20gb" },
+  "mounts": [
+    "source=clutta-playground-data-${devcontainerId},target=/home/node/sanitized-cases,type=volume"
+  ],
+  "postStartCommand": ["node", ".devcontainer/startup.mjs", "--codespaces-hook"],
+  "waitFor": "postStartCommand",
+  "forwardPorts": [],
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "remote.autoForwardPorts": false,
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

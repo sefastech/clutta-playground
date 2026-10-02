@@ -1,0 +1,31 @@
+# Credentials and local runtime state
+.env
+.env.*
+!.env.example
+.clutta/
+*.pem
+*.key
+*credentials*.json
+
+# Generated workload and proof output belongs outside this checkout
+logs/
+work/
+artifacts/
+receipts/
+sanitized-cases/
+bin/
+node_modules/
+coverage/
+dist/
+
+# Raw media and voice samples are private production inputs
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.mov
+
+# Local editor state
+.DS_Store
+.idea/
+.vscode/

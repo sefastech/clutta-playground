@@ -1,0 +1,472 @@
+#!/usr/bin/env node
+import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { createInterface } from 'node:readline/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { installRuntime } from './lib/release.mjs';
+import { appendHiddenCharacter, checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
+import { API_URL, APP_URL, CloudClient, uuid, validateAccount, readSource, readDaemon, assertCoverage,
+  assertDefinition, loadedActivation, localInstance, assertInstance, assertCaseMember } from './lib/cloud.mjs';
+
+const execute = promisify(execFile);
+const repository = path.dirname(fileURLToPath(import.meta.url));
+const dataRootInput = trimInput(process.env.CLUTTA_PLAYGROUND_DATA_ROOT);
+const base = path.resolve(dataRootInput ?? path.join(homedir(), 'sanitized-cases/clutta-playground'));
+const credentialsFile = path.join(base, 'lab-auth.json');
+const sessionFile = path.join(base, 'active-cloud.json');
+const [command, ...args] = process.argv.slice(2).map(trimInput);
+const dataEnv = { ...process.env, CLUTTA_PLAYGROUND_DATA_ROOT: base };
+for (const key of Object.keys(dataEnv)) if (key.startsWith('CLUTTA_') && !key.startsWith('CLUTTA_PLAYGROUND_')) delete dataEnv[key];
+
+function save(file, value) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  renameSync(temporary, file);
+}
+
+function owned(file) {
+  const metadata = lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.uid !== process.getuid() || (metadata.mode & 0o077)) {
+    throw new Error('Lab state/credentials must be an owned regular file, private to your OS user. Do not use a shared or symlinked file.');
+  }
+  return JSON.parse(readFileSync(file, 'utf8'));
+}
+
+function state() {
+  const result = owned(sessionFile);
+  const workload = owned(path.join(base, 'active-workload.json'));
+  if (result.workloadProject !== workload.project || result.directory !== workload.directory || result.directory !== path.join(realpathSync(base), workload.project) ||
+      !/^clutta-playground-[a-f0-9]{12}$/.test(workload.project) || result.agentName !== `clutta-scheduler-${workload.project.slice(-12)}`) {
+    throw new Error('The Cloud session does not identify this owned workload. No operation was performed.');
+  }
+  uuid(result.workspaceId); uuid(result.projectId); uuid(result.sourceId);
+  return result;
+}
+
+async function run(program, argv, extra = {}) {
+  const progress = setInterval(() => console.log(`${path.basename(program)} ${argv[0]}: still running; no readiness is assumed.`), 20000);
+  try { return (await execute(program, argv, { cwd: repository, env: dataEnv, timeout: 180000, maxBuffer: 8 * 1024 * 1024, ...extra })).stdout.trim(); }
+  catch { throw new Error(`${path.basename(program)} could not finish this step. Check Docker availability, the committed checkout, and the documented prerequisites.`); }
+  finally { clearInterval(progress); }
+}
+
+async function freshRuntime() {
+  let stage = 'Resolving the latest stable release';
+  const progress = setInterval(() => console.log(`${stage}: still running; a previous receipt is not a current-release fallback.`), 20000);
+  try {
+    return await installRuntime({ directory: path.join(base, 'runtime'), onProgress: (message) => { stage = message; console.log(message); } });
+  } finally { clearInterval(progress); }
+}
+
+async function work(action, ...argv) {
+  const result = await run(path.join(repository, 'workload'), [action, ...argv]);
+  return ['status', 'payment', 'pause', 'resume', 'traffic'].includes(action) ? JSON.parse(result.slice(result.indexOf('{'))) : result;
+}
+
+async function maskedPrompt() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Run ./lab start in an interactive terminal to enter your own workspace key safely.');
+  process.stdout.write('Workspace API key (hidden): ');
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const previous = process.stdin.isRaw;
+    process.stdin.setRawMode(true); process.stdin.resume();
+    function finish(error) {
+      process.stdin.off('data', receive); process.stdin.setRawMode(previous); process.stdin.pause();
+      process.stdout.write('\n'); error ? reject(error) : resolve(trimInput(value));
+    }
+    function receive(bytes) {
+      for (const character of bytes.toString('utf8')) {
+        if (character === '\u0003' || character === '\u0004') return finish(new Error('Key entry cancelled. No credential was saved.'));
+        if (character === '\r' || character === '\n') return finish();
+        value = appendHiddenCharacter(value, character);
+        if (value.length > 4096) return finish(new Error('Key input exceeded its supported size.'));
+      }
+    }
+    process.stdin.on('data', receive);
+  });
+}
+
+async function account() {
+  if (existsSync(credentialsFile)) {
+    const credentials = owned(credentialsFile);
+    uuid(credentials.workspace_id); uuid(credentials.project_id);
+    const client = new CloudClient(credentials.api_key);
+    await validateAccount(client, credentials.workspace_id);
+    return { credentials, client };
+  }
+  if (!process.stdin.isTTY) throw new Error(`Sign up at ${APP_URL}/signup, create a Scheduler lab project, then run ./lab start in the terminal. No key was assumed.`);
+  console.log(`First run: use your own account at ${APP_URL}. Create a dedicated Scheduler lab project, then open its Connections page.`);
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  let workspaceId, projectId;
+  try {
+    workspaceId = uuid(trimInput(await prompt.question('Workspace ID from Connections: ')), 'Workspace ID');
+    projectId = uuid(trimInput(await prompt.question('Scheduler lab project ID: ')), 'Project ID');
+  } finally { prompt.close(); }
+  const key = await maskedPrompt();
+  const client = new CloudClient(key);
+  await validateAccount(client, workspaceId);
+  const credentials = { api_key: key, backend_url: API_URL, workspace_id: workspaceId, project_id: projectId };
+  save(credentialsFile, credentials);
+  console.log('Workspace verified. Key saved privately outside Git; host Clutta credentials were not changed.');
+  return { credentials, client };
+}
+
+const workspaceDirectory = (session) => path.join(session.directory, 'scan-state/workspaces', session.workspaceId);
+const caseLink = (session, id) => `${APP_URL}/scan/case-files/${encodeURIComponent(id)}?project=${session.projectId}`;
+const instanceLink = (session, id) => `${APP_URL}/scan/instances/${encodeURIComponent(id)}?project=${session.projectId}`;
+function lines(file) {
+  if (!existsSync(file)) return [];
+  const result = [];
+  for (const line of readFileSync(file, 'utf8').split('\n')) { if (line) try { result.push(JSON.parse(line)); } catch { /* A concurrent final line can be incomplete. */ } }
+  return result;
+}
+
+async function waitFor(label, check, seconds, { quiet = false } = {}) {
+  const started = Date.now();
+  let lastMessage = 0;
+  while (Date.now() - started < seconds * 1000) {
+    const result = await check();
+    if (result) return result;
+    if (!quiet && Date.now() - lastMessage > 20000) {
+      console.log(`${label}: waiting (${Math.round((Date.now() - started) / 1000)}s). This is a live check, not a replay.`);
+      lastMessage = Date.now();
+    }
+    await sleep(2000);
+  }
+  throw new Error(`${label} did not pass within ${seconds}s. Evidence is preserved. Run ./lab status; do not treat this as a successful demo.`);
+}
+
+async function observe(client, session) {
+  const source = await readSource(client, session);
+  const snapshot = readDaemon(workspaceDirectory(session));
+  assertCoverage(snapshot, source.health);
+  if (snapshot.cache.active_catalog?.source_id !== session.sourceId) throw new Error('The daemon loaded a different source identity.');
+  if (session.installationId && snapshot.sync.installation_id !== session.installationId) throw new Error('Scan installation changed during this run.');
+  return { source, snapshot };
+}
+
+async function container(session) {
+  const output = await run('docker', ['inspect', '--format', '{{json .}}', session.agentName]);
+  const actual = JSON.parse(output);
+  if (actual.Config?.Labels?.['io.clutta.playground.run'] !== session.workloadProject ||
+      actual.Config?.Image !== session.runtime.scanImage) throw new Error('The container does not belong to this exact lab artifact.');
+  return actual;
+}
+
+async function startScan(session) {
+  const { directory, agentName, runtime } = session;
+  for (const folder of ['scan-home', 'scan-state']) mkdirSync(path.join(directory, folder), { recursive: true, mode: 0o700 });
+  for (const role of ['api', 'worker', 'scheduler']) closeSync(openSync(path.join(directory, 'logs', `${role}.log`), 'a', 0o600));
+  const config = path.join(directory, 'scan.yaml');
+  writeFileSync(config, `version: 2\nscope:\n  project_id: ${session.projectId}\ncollection:\n  mode: host\nanalysis:\n  mode: manual\nflow_discovery:\n  enabled: true\n  correlation_field: ""\n  window_seconds: 60\n  mode: local\nconnection:\n  mode: cloud\n`, { mode: 0o600 });
+  await run('docker', ['pull', runtime.scanImage]);
+  const exists = await run('docker', ['container', 'ls', '--all', '--filter', `name=^/${agentName}$`, '--format', '{{.Names}}']);
+  if (exists) {
+    const actual = await container(session);
+    if (actual.State.Running) return;
+    await run('docker', ['start', agentName]);
+    return;
+  }
+  await run('docker', ['run', '--detach', '--name', agentName, '--hostname', agentName,
+    '--label', `io.clutta.playground.run=${session.workloadProject}`, '--user', `${process.getuid()}:${process.getgid()}`,
+    '--workdir', '/var/clutta', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--init', '--tmpfs', '/tmp',
+    '--log-driver', 'local', '--log-opt', 'max-size=1m', '--log-opt', 'max-file=2',
+    '--env', `CLUTTA_WORKSPACE_ID=${session.workspaceId}`, '--env', `CLUTTA_SCAN_AGENT_NAME=${agentName}`,
+    '--env', 'CLUTTA_AUTH_PATH=/var/clutta/.clutta/auth.json', '--env', 'CLUTTA_STATE_DIR=/var/clutta/.clutta',
+    '--mount', `type=bind,source=${path.join(directory, 'scan-home')},target=/var/clutta`,
+    '--mount', `type=bind,source=${path.join(directory, 'scan-state')},target=/var/clutta/.clutta`,
+    '--mount', `type=bind,source=${credentialsFile},target=/var/clutta/.clutta/auth.json,readonly`,
+    '--mount', `type=bind,source=${path.join(directory, 'logs')},target=/var/log/clutta-playground,readonly`,
+    '--mount', `type=bind,source=${config},target=/etc/clutta/scan.yaml,readonly`,
+    runtime.scanImage, 'scan', 'start', '--config', '/etc/clutta/scan.yaml', '--project-id', session.projectId,
+    '--state-dir', '/var/clutta/.clutta', '--path', '/var/log/clutta-playground', '--from-start', 'false']);
+}
+
+async function register(client, credentials, runtime) {
+  console.log('Building and starting the three idle workload services. First-time downloads/builds can take extra time.');
+  await work('start');
+  const workload = owned(path.join(base, 'active-workload.json'));
+  const session = { workloadProject: workload.project, directory: workload.directory,
+    workspaceId: credentials.workspace_id, projectId: credentials.project_id,
+    agentName: `clutta-scheduler-${workload.project.slice(-12)}`, runtime,
+    startedAt: new Date().toISOString(), phase: 'Connecting', stopped: false };
+  try {
+    const result = await client.request('/v1/catalog/scan/sources/register', { method: 'POST',
+      body: { hostname: session.agentName, sourceIdentifier: session.agentName, agentVersion: runtime.tag, sourceKind: 'file', projectId: session.projectId } });
+    session.sourceId = uuid(result.data?.sourceId, 'Registered source ID');
+    save(sessionFile, session);
+    await readSource(client, session);
+  } catch (error) {
+    console.error('Project registration/routing did not pass. No payment traffic or Scan collection was started.');
+    console.error('Stop the idle workload with ./workload stop; its local evidence is preserved.');
+    throw error;
+  }
+  return session;
+}
+
+async function start(client, credentials) {
+  console.log('1/4 Checking the latest stable Clutta artifacts. No RC or cached-current fallback.');
+  const runtime = await freshRuntime();
+  let session = existsSync(sessionFile) ? state() : null;
+  if (session && !session.stopped) {
+    if (session.workspaceId !== credentials.workspace_id || session.projectId !== credentials.project_id) throw new Error('Stop the existing owned lab before choosing another workspace or project.');
+    if (session.runtime.scanImage !== runtime.scanImage) throw new Error('A newer stable release is ready. Run ./lab stop, then ./lab start for a fresh versioned run; the current demo was not changed.');
+    await readSource(client, session);
+    await work('start');
+    session.runtime = runtime;
+  } else session = await register(client, credentials, runtime);
+  console.log('2/4 Starting isolated Scan; auditing its registered project route before any payments.');
+  await startScan(session);
+  const ready = await waitFor('Source readiness', async () => {
+    await container(session);
+    const source = await readSource(client, session);
+    let snapshot; try { snapshot = readDaemon(workspaceDirectory(session)); } catch { return null; }
+    try { assertCoverage(snapshot, source.health); } catch { return null; }
+    return { source, snapshot };
+  }, 120);
+  session.installationId = ready.snapshot.sync.installation_id;
+  if (session.proposalId) {
+    const active = loadedActivation(ready.snapshot, ready.source.catalog, session.proposalId, session);
+    console.log(active ? 'Existing human-approved flow is loaded; no new learning or approval was performed.' : 'Your saved proposal is ready for human review or activation propagation.');
+    console.log(`Flow: ${APP_URL}/projects/${session.projectId}/flows/${active ? `active/${active.definition.id}/${active.definition.version}` : `candidates/${session.proposalId}`}`);
+    console.log(session.fault ? 'A prior pause is preserved. Next: ./lab repair' : 'Next: ./lab break');
+    save(sessionFile, session);
+    return;
+  }
+  session.phase = 'Learning'; save(sessionFile, session);
+  if (!session.learningCompleted) {
+    console.log('3/4 Generating 600 real, distinct healthy payments. Every service writes at least 500 committed records.');
+    await work('traffic', '600', '10');
+    await waitFor('Healthy mailbox delivery', async () => (await work('status')).database.pending === 0, 30);
+    session.learningCompleted = true; save(sessionFile, session);
+  }
+  console.log('4/4 Waiting for a cited three-step proposal. No candidate is approved by this script.');
+  const proposal = await waitFor('Learning and Cloud proposal', async () => {
+    await observe(client, session);
+    const query = new URLSearchParams({ project_id: session.projectId, state: 'detected', ready: 'true', since: session.startedAt, page: '1', limit: '50' });
+    const result = await client.request(`/v1/catalog/scan/inference/detected-chains?${query}`);
+    if (!Array.isArray(result.data)) throw new Error('Catalog proposal response changed; no readiness was assumed.');
+    const candidate = result.data.find((row) => row.workspace_id === session.workspaceId && row.installation_id === session.installationId &&
+      row.ready_for_activation === true && row.proposal?.definition?.correlation_recipe?.join_key === 'payment_id');
+    if (!candidate) return null;
+    assertDefinition(candidate.proposal.definition, session);
+    return candidate;
+  }, 900);
+  session.proposalId = uuid(proposal.proposal.proposal_id, 'Proposal ID'); session.phase = 'Review needed';
+  save(sessionFile, session);
+  save(path.join(session.directory, 'receipts', `proposal-${randomUUID()}.json`), proposal);
+  console.log(`Review needed: ${APP_URL}/projects/${session.projectId}/flows/candidates/${session.proposalId}`);
+  console.log('Review the three real steps, cited runs, and deadline. Approve and activate the flow in your browser.');
+  console.log('Next: ./lab break (it will verify activation and healthy monitored runs before pausing anything).');
+}
+
+async function activation(client, session) {
+  if (!session.proposalId) throw new Error('Run ./lab start and complete human review first.');
+  return waitFor('Human activation and daemon loading', async () => {
+    const { source, snapshot } = await observe(client, session);
+    return loadedActivation(snapshot, source.catalog, session.proposalId, session);
+  }, 180);
+}
+
+async function monitored(client, session, active, payment, { complete = true } = {}) {
+  const directory = workspaceDirectory(session);
+  const instanceId = await waitFor('Live authoritative matching', async () => {
+    await observe(client, session);
+    return localInstance(lines(path.join(directory, 'scan.pulses.log')), payment.payment_id, active, session);
+  }, 90);
+  const instance = await waitFor('Cloud monitored run', async () => {
+    await observe(client, session);
+    const row = await client.request(`/v1/incident/scan/instances/${uuid(instanceId)}?project_id=${session.projectId}`, { allowNotFound: true });
+    if (!row) return null;
+    if (complete && row.state !== 'completed') return null;
+    if (row.lineage?.availability !== 'available') return null;
+    return assertInstance(row, payment.payment_id, active, session, { complete });
+  }, 180);
+  return instance;
+}
+
+async function healthyControls(client, session, active) {
+  const payments = [];
+  console.log('Checking healthy monitored payments first. A false alarm keeps the demo gate red.');
+  for (let index = 0; index < 20; index++) { payments.push(await work('payment')); await sleep(250); }
+  await waitFor('Healthy database completion', async () => (await work('status')).database.pending === 0, 30);
+  const controls = [];
+  for (const payment of payments) controls.push(await monitored(client, session, active, payment));
+  const observationUntil = Date.now() + active.definition.deadline_ms + 1000;
+  await waitFor('Healthy deadline-window observation', async () => {
+    await observe(client, session);
+    return Date.now() >= observationUntil;
+  }, Math.ceil(active.definition.deadline_ms / 1000) + 30);
+  for (let index = 0; index < controls.length; index++) {
+    const instance = await client.request(`/v1/incident/scan/instances/${controls[index].instance_id}?project_id=${session.projectId}`);
+    controls[index] = assertInstance(instance, payments[index].payment_id, active, session);
+  }
+  save(path.join(session.directory, 'receipts', `healthy-controls-${randomUUID()}.json`), { at: new Date().toISOString(), active, payments, controls });
+  console.log('PASS: 20 fresh payments completed every required monitored step without violations.');
+}
+
+async function caseFile(client, session, active, instance) {
+  return waitFor('Fault-attributed Case File', async () => {
+    await observe(client, session);
+    const query = new URLSearchParams({ project_id: session.projectId, violation_kind: 'missing_step', limit: '100', offset: '0' });
+    const list = await client.request(`/v1/incident/scan/case-files?${query}`);
+    if (!Array.isArray(list.case_files)) throw new Error('Case File response changed; no finding was assumed.');
+    for (const file of list.case_files.filter((file) => file.chain?.chain_id === active.definition.id && file.chain.chain_version === active.definition.version)) {
+      const membership = await client.request(`/v1/incident/scan/case-files/${encodeURIComponent(file.id)}/instances/${uuid(instance.instance_id)}?project_id=${session.projectId}`, { allowNotFound: true });
+      const member = membership?.member;
+      if (!member) continue;
+      assertCaseMember(member, instance.instance_id, active, session, session.fault.payment.payment_id);
+      return { file, member };
+    }
+    return null;
+  }, Math.ceil(active.definition.deadline_ms / 1000) + 180);
+}
+
+async function breakScheduler(client, session) {
+  if (session.fault) {
+    if (session.fault.caseId) { console.log(`Case File: ${caseLink(session, session.fault.caseId)}`); console.log('Next: ./lab repair'); return; }
+    console.log('Resuming verification of the existing paused payment; no second fault is injected.');
+  }
+  const active = await activation(client, session);
+  if (session.fault && (session.active.definition_fingerprint !== active.definition_fingerprint || session.active.catalog_generation !== active.catalog_generation)) {
+    throw new Error('The active definition changed after this fault. Repair locally before starting another controlled proof.');
+  }
+  if (!session.fault) {
+    await healthyControls(client, session, active);
+    const { source, snapshot } = await observe(client, session);
+    const current = loadedActivation(snapshot, source.catalog, session.proposalId, session);
+    if (!current || current.definition_fingerprint !== active.definition_fingerprint || current.catalog_generation !== active.catalog_generation) {
+      throw new Error('Activation changed during healthy controls. No scheduler pause was performed; review the current flow before retrying.');
+    }
+    await work('pause');
+    session.active = active; session.phase = 'Scheduler paused'; session.fault = { pausedAt: new Date().toISOString() };
+    save(sessionFile, session);
+    session.fault.payment = await work('payment'); save(sessionFile, session);
+  }
+  if (!session.fault.payment) throw new Error('A previous pause interrupted before payment submission. Run ./lab repair before retrying.');
+  const payment = session.fault.payment;
+  await waitFor('New payment queued with green health', async () => {
+    const actual = await work('status', payment.payment_id);
+    const overall = await work('status');
+    if (overall.health.status !== 'ok' || overall.scheduler.paused !== true) throw new Error('The fault did not preserve a healthy paused scheduler.');
+    if (actual.mailbox_delivered_at) throw new Error('The allegedly stalled payment was delivered; the fault proof is invalid.');
+    return actual.queued_at;
+  }, 30);
+  console.log('Health is green. The payment was processed, but its notification is pending in the real outbox.');
+  const instance = await monitored(client, session, active, payment, { complete: false });
+  const result = await caseFile(client, session, active, instance);
+  session.phase = 'Case File available'; session.fault.caseId = result.file.id; session.fault.instanceId = instance.instance_id;
+  save(sessionFile, session);
+  save(path.join(session.directory, 'receipts', `silent-failure-${randomUUID()}.json`), {
+    schema: 'clutta.playground.silent-failure/v1', at: new Date().toISOString(),
+    runtime: session.runtime, workspaceId: session.workspaceId, projectId: session.projectId, sourceId: session.sourceId,
+    active, payment, instance, caseFile: result.file, member: result.member, cloudValidated: true,
+  });
+  console.log(`PASS: Clutta cited this payment's missing final step. Cause remains separate from the completion violation.`);
+  console.log(`Open: ${caseLink(session, result.file.id)}`);
+  console.log('Next: ./lab repair');
+}
+
+async function repair(client, session) {
+  await waitFor('Backlog drain', async () => (await work('status')).database.pending === 0, 30);
+  console.log('Local recovery confirmed. Checking Clutta separately.');
+  await validateAccount(client, session.workspaceId);
+  const active = await activation(client, session);
+  const payment = await work('payment');
+  const instance = await monitored(client, session, active, payment);
+  save(path.join(session.directory, 'receipts', `recovery-${randomUUID()}.json`), { at: new Date().toISOString(), payment, instance, priorFault: session.fault ?? null });
+  session.previousFault = session.fault ?? null; session.fault = null; session.phase = 'Monitoring'; save(sessionFile, session);
+  console.log(`PASS: backlog drained and a new monitored payment completed. ${instanceLink(session, instance.instance_id)}`);
+  console.log('The missed deadline remains in history. No automatic Case File resolution is claimed.');
+  console.log('Repeat: ./lab break. Finish safely: ./lab stop.');
+}
+
+async function stop(client, session) {
+  const exists = await run('docker', ['container', 'ls', '--all', '--filter', `name=^/${session.agentName}$`, '--format', '{{.Names}}']);
+  if (exists) {
+    const actual = await container(session);
+    if (actual.State.Running) await run('docker', ['stop', '--time', '20', session.agentName]);
+  }
+  if (!owned(path.join(base, 'active-workload.json')).stopped) await work('stop');
+  session.stopped = true; session.phase = 'Stopped'; save(sessionFile, session);
+  console.log(`Owned local services stopped. Logs, receipts, credentials, and database files remain in ${session.directory}`);
+  let retired = false;
+  try { retired = (await client?.request(`/v1/catalog/scan/sources/${session.sourceId}`))?.data?.state === 'retired'; } catch { /* Local stop must work while Cloud is unreachable. */ }
+  console.log(retired ? 'Cloud source retirement confirmed.' : 'Cloud retirement is not confirmed; local stop is complete.');
+}
+
+try {
+  checkScriptInputs([command, ...args], dataRootInput);
+  if (args.length && !(args.length === 1 && args[0] === 'scheduler' && ['break', 'repair'].includes(command))) throw new Error('Unexpected arguments. Keys and IDs are entered through prompts, not command arguments.');
+  if (!['start', 'bootstrap', 'break', 'repair', 'status', 'stop', 'help'].includes(command ?? 'help')) throw new Error('Use ./lab start, break, repair, status, or stop.');
+  if (!command || command === 'help') {
+    console.log('Clutta scheduler lab: ./lab start -> review and activate in the browser -> ./lab break -> ./lab repair');
+    console.log('Check: ./lab status. Finish safely: ./lab stop. Setup only: ./lab bootstrap.');
+    process.exit(0);
+  }
+  if (process.platform !== 'linux') throw new Error('This verified helper requires Linux. Use the Codespace or Linux with Docker Compose.');
+  if (base === path.parse(base).root || base === homedir() || base === repository || base.startsWith(`${repository}${path.sep}`)) throw new Error('Choose an isolated sanitized-cases data root outside Git and the home root.');
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  if (realpathSync(base) !== base || (lstatSync(base).mode & 0o077) || lstatSync(base).uid !== process.getuid()) throw new Error('The lab data root must be owned, private, and not symlinked.');
+  if (dataEnv.CLUTTA_PLAYGROUND_LOCK_HELD !== base) {
+    const child = spawn('flock', ['--nonblock', '--conflict-exit-code', '75', path.join(base, 'lab-operation.lock'), process.execPath, fileURLToPath(import.meta.url), command, ...args], {
+      env: { ...dataEnv, CLUTTA_PLAYGROUND_LOCK_HELD: base }, stdio: 'inherit',
+    });
+    child.once('error', () => { console.error('Linux flock is required to protect concurrent lab operations.'); process.exitCode = 1; });
+    child.once('exit', (code) => { if (code === 75) console.error('Another lab command owns this run. Wait for it to finish and retry.'); process.exitCode = code ?? 1; });
+  } else if (command === 'bootstrap') {
+    const runtime = await freshRuntime();
+    console.log(`Verified stable Clutta ${runtime.tag}; CLI, Scan digest, and matching Helm chart recorded.`);
+    console.log('Next: ./lab start. No credentials or Cloud evidence were sent by bootstrap.');
+  } else {
+    if (command === 'stop') {
+      const savedCloud = existsSync(sessionFile) ? owned(sessionFile) : null;
+      const savedWorkload = existsSync(path.join(base, 'active-workload.json')) ? owned(path.join(base, 'active-workload.json')) : null;
+      if (!savedCloud || (savedCloud.stopped && savedCloud.workloadProject !== savedWorkload?.project)) {
+        if (existsSync(path.join(base, 'active-workload.json')) && !owned(path.join(base, 'active-workload.json')).stopped) await work('stop');
+        console.log('Idle workload stopped. No Cloud session was available; no source retirement is claimed.');
+      } else {
+        const session = state();
+        let client = null;
+        try {
+          const credentials = existsSync(credentialsFile) ? owned(credentialsFile) : null;
+          if (credentials?.workspace_id === session.workspaceId) client = new CloudClient(credentials.api_key);
+        } catch { /* Unreadable credentials must not prevent an owned local stop. */ }
+        await stop(client, session);
+      }
+    } else if (command === 'repair') {
+      const session = state();
+      if (session.stopped) throw new Error('This lab is stopped. Start a new run.');
+      await work('resume');
+      const credentials = existsSync(credentialsFile) ? owned(credentialsFile) : null;
+      if (!credentials || credentials.workspace_id !== session.workspaceId) throw new Error('Local scheduler resumed. Cloud verification requires the saved workspace credentials.');
+      await repair(new CloudClient(credentials.api_key), session);
+    } else {
+    const { client, credentials } = await account();
+    if (command === 'start') await start(client, credentials);
+    else {
+      const session = state();
+      if (session.stopped) throw new Error('This lab is stopped. Use ./lab start for a new isolated run.');
+      if (session.workspaceId !== credentials.workspace_id || session.projectId !== credentials.project_id) throw new Error('Saved account and active session differ. No operation was performed.');
+      if (command === 'break') await breakScheduler(client, session);
+      if (command === 'status') {
+        await container(session); await observe(client, session);
+        const actual = await work('status');
+        console.log(`${session.phase}: Clutta ${session.runtime.tag}, exclusive project route and live source coverage verified.`);
+        console.log(`Payments: ${actual.database.delivered} delivered, ${actual.database.pending} pending. Scheduler ${actual.scheduler.paused ? 'paused' : 'running'}; HTTP health ${actual.health.status}.`);
+        if (session.proposalId) console.log(`Flow: ${APP_URL}/projects/${session.projectId}/flows/candidates/${session.proposalId}`);
+        if (session.fault?.caseId) console.log(`Case File: ${caseLink(session, session.fault.caseId)}`);
+      }
+    }
+    }
+  }
+} catch (error) {
+  console.error(`Lab stopped at a failed check: ${error.message}`);
+  console.error('No Clutta result was fabricated. Evidence remains under sanitized-cases. See docs/troubleshooting.md.');
+  process.exitCode = 1;
+}

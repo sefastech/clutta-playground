@@ -1,0 +1,82 @@
+x-application: &application
+  image: clutta-playground-scheduler:${SOURCE_REVISION:?Set SOURCE_REVISION}
+  init: true
+  user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  environment: &environment
+    PGHOST: postgres
+    LOG_DIRECTORY: /lab/logs
+    SOURCE_REVISION: "${SOURCE_REVISION}"
+    WORKLOAD_IDENTITY: "${WORKLOAD_IDENTITY:-}"
+  volumes:
+    - "${WORKLOAD_RUN_DIR:?Set WORKLOAD_RUN_DIR}/logs:/lab/logs"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+    interval: 2s
+    timeout: 2s
+    retries: 20
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: playground
+      POSTGRES_DB: playground
+      # Fake, local lab only. PostgreSQL is never published on a host port.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - "${WORKLOAD_RUN_DIR}/postgres:/var/lib/postgresql/data"
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U playground -d playground"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  api:
+    <<: *application
+    build:
+      context: .
+      args:
+        SOURCE_REVISION: "${SOURCE_REVISION}"
+    environment:
+      <<: *environment
+      SERVICE_ROLE: api
+
+  worker:
+    <<: *application
+    environment:
+      <<: *environment
+      SERVICE_ROLE: worker
+
+  scheduler:
+    <<: *application
+    environment:
+      <<: *environment
+      SERVICE_ROLE: scheduler
+
+  check:
+    <<: *application
+    profiles: [validation]
+    command: [node, scripts/verify.mjs]
+    healthcheck:
+      disable: true
+    environment:
+      <<: *environment
+      RECEIPT_DIRECTORY: /lab/receipts
+    volumes:
+      - "${WORKLOAD_RUN_DIR}/logs:/lab/logs:ro"
+      - "${WORKLOAD_RUN_DIR}/receipts:/lab/receipts"
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      scheduler:
+        condition: service_healthy

@@ -1,0 +1,12 @@
+{
+  "name": "clutta-playground",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "dependencies": { "yaml": "2.9.1" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "check": "node --check workload && node --check lab && node --check lib/cloud.mjs && node --check lib/release.mjs && node --check .devcontainer/startup.mjs && npm --prefix scenarios/scheduler run check",
+    "test": "node --test test/*.test.mjs && npm --prefix scenarios/scheduler test"
+  }
+}

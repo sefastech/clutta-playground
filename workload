@@ -1,0 +1,168 @@
+#!/usr/bin/env node
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
+
+const repository = path.dirname(fileURLToPath(import.meta.url));
+const dataRootInput = trimInput(process.env.CLUTTA_PLAYGROUND_DATA_ROOT);
+const base = path.resolve(dataRootInput ?? path.join(homedir(), 'sanitized-cases/clutta-playground'));
+const activeFile = path.join(base, 'active-workload.json');
+const [command, ...args] = process.argv.slice(2).map(trimInput);
+
+function protectDirectory(directory) {
+  if (directory === path.parse(directory).root || directory === homedir() ||
+      directory === repository || directory.startsWith(`${repository}${path.sep}`)) {
+    throw new Error('Choose an isolated data directory outside the checkout and home root');
+  }
+}
+
+async function run(program, arguments_, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, arguments_, { stdio: 'inherit', ...options });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(code === 75 ? 'Another start/stop operation owns this data directory. Wait for it to finish and retry.' : `${program} exited with ${code}`));
+    });
+  });
+}
+
+async function capture(program, arguments_, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, arguments_, { stdio: ['ignore', 'pipe', 'inherit'], ...options });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolve(output.trim()) : reject(new Error(`${program} identity check failed`)));
+  });
+}
+
+async function sourceRevision() {
+  await new Promise((resolve, reject) => {
+    const child = spawn('git', ['status', '--porcelain'], { cwd: repository, stdio: ['ignore', 'pipe', 'ignore'] });
+    let changes = '';
+    child.stdout.on('data', (chunk) => { changes += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0 || changes.trim()) reject(new Error('Run a clean committed checkout so image and receipt identify the actual source. Preserve changes on a branch; do not reset them.'));
+      else resolve();
+    });
+  });
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['rev-parse', 'HEAD'], { cwd: repository, stdio: ['ignore', 'pipe', 'ignore'] });
+    let result = '';
+    child.stdout.on('data', (chunk) => { result += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code !== 0 || !/^[a-f0-9]{40}$/.test(result.trim())) reject(new Error('Could not identify checked-out source revision'));
+      else resolve(result.trim());
+    });
+  });
+}
+
+function readState() {
+  const state = JSON.parse(readFileSync(activeFile, 'utf8'));
+  const expected = path.join(realpathSync(base), state.project ?? 'invalid');
+  if (!/^clutta-playground-[a-f0-9]{12}$/.test(state.project) || state.directory !== expected ||
+      realpathSync(state.directory) !== expected || !/^[a-f0-9]{40}$/.test(state.sourceRevision)) {
+    throw new Error('Workload session does not identify a valid owned directory and project');
+  }
+  return state;
+}
+
+function compose(state, arguments_, { captured = false, identity } = {}) {
+  return (captured ? capture : run)('docker', ['compose', '--project-name', state.project,
+    '--file', path.join(repository, 'scenarios/scheduler/compose.yaml'), ...arguments_], {
+    env: {
+      ...process.env, WORKLOAD_RUN_DIR: state.directory, SOURCE_REVISION: state.sourceRevision,
+      LAB_UID: String(process.getuid?.() ?? 1000), LAB_GID: String(process.getgid?.() ?? 1000),
+      ...(identity ? { WORKLOAD_IDENTITY: JSON.stringify(identity) } : {}),
+    },
+  });
+}
+
+async function runtimeIdentity(state) {
+  const containers = {};
+  for (const service of ['api', 'worker', 'scheduler', 'postgres']) {
+    const container = await compose(state, ['ps', '--quiet', service], { captured: true });
+    if (!/^[a-f0-9]{64}$/.test(container)) throw new Error(`${service} has no single running lab container`);
+    const image = await capture('docker', ['inspect', '--format', '{{.Image}}', container]);
+    if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Container image identity is unavailable');
+    const label = await capture('docker', ['image', 'inspect', '--format', '{{index .Config.Labels "org.opencontainers.image.revision"}}', image]);
+    if (service !== 'postgres' && label !== state.sourceRevision) throw new Error(`${service} image revision differs from the owned run`);
+    containers[service] = { container, image, revision: service === 'postgres' ? null : label };
+  }
+  if (new Set(['api', 'worker', 'scheduler'].map((service) => containers[service].image)).size !== 1) {
+    throw new Error('Application services are not running the same reviewed artifact');
+  }
+  return { project: state.project, capturedAt: new Date().toISOString(), containers };
+}
+
+function saveState(state) {
+  writeFileSync(activeFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+try {
+  checkScriptInputs([command, ...args], dataRootInput);
+  protectDirectory(base);
+  const maximumArguments = { start: 0, verify: 0, stop: 0, pause: 0, resume: 0, payment: 0, status: 1, traffic: 2 };
+  if (command in maximumArguments && args.length > maximumArguments[command]) {
+    throw new Error(`Unexpected arguments for ${command}; no operation was performed`);
+  }
+  if (['start', 'stop'].includes(command) && process.env.CLUTTA_WORKLOAD_LOCK_HELD !== base) {
+    if (process.platform !== 'linux') throw new Error('The current helper requires Linux flock; other host support is not verified');
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    protectDirectory(realpathSync(base));
+    await run('flock', ['--nonblock', '--conflict-exit-code', '75', path.join(base, 'operation.lock'),
+      process.execPath, fileURLToPath(import.meta.url), command, ...args],
+    { env: { ...process.env, CLUTTA_WORKLOAD_LOCK_HELD: base } });
+    process.exit(0);
+  }
+  if (command === 'start') {
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    protectDirectory(realpathSync(base));
+    let state = existsSync(activeFile) ? readState() : null;
+    const revision = await sourceRevision();
+    if (state && !state.stopped && state.sourceRevision !== revision) {
+      throw new Error('Source revision changed during this run. Stop it first; a new start preserves the old data.');
+    }
+    if (!state || state.stopped) {
+      const project = `clutta-playground-${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const directory = path.join(realpathSync(base), project);
+      mkdirSync(directory, { mode: 0o700 });
+      for (const folder of ['logs', 'postgres', 'receipts']) mkdirSync(path.join(directory, folder), { mode: 0o700 });
+      state = { project, directory, sourceRevision: revision, createdAt: new Date().toISOString(), stopped: false };
+      saveState(state);
+    }
+    console.log(`Workload-only run: ${state.directory}`);
+    console.log('Fake payments only. No Clutta credential or cloud connection is configured by this command.');
+    await compose(state, ['build', '--pull', 'api']);
+    await compose(state, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', '120', 'api', 'worker', 'scheduler']);
+    console.log('Services started. Use ./workload verify on this fresh run to test real completion and silent failure.');
+  } else if (['traffic', 'payment', 'status', 'pause', 'resume', 'verify', 'stop'].includes(command)) {
+    const state = readState();
+    if (state.stopped) throw new Error('This session is stopped; use ./workload start for a new isolated run');
+    if (command === 'verify') {
+      const identity = await runtimeIdentity(state);
+      await compose(state, ['run', '--rm', '--no-deps', 'check'], { identity });
+      console.log(`Receipts preserved in ${path.join(state.directory, 'receipts')}`);
+    } else if (command === 'stop') {
+      await compose(state, ['down', '--timeout', '15']);
+      saveState({ ...state, stopped: true });
+      console.log(`Stopped only ${state.project}. Logs, receipts, and database files remain in ${state.directory}`);
+    } else {
+      await compose(state, ['exec', '-T', 'api', 'node', 'scripts/client.mjs', command, ...args]);
+    }
+  } else {
+    console.log('Usage: ./workload start | verify | traffic [count] [rate] | payment | status [payment-id] | pause | resume | stop');
+    console.log('This controls the sample workload only, not Clutta learning, activation, or Case Files.');
+    if (command) process.exitCode = 1;
+  }
+} catch (error) {
+  console.error(`Workload check failed: ${error.message}`);
+  process.exitCode = 1;
+}

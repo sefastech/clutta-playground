@@ -29,6 +29,10 @@ The key is workspace-scoped, not project-scoped. A dedicated project/environment
 
 ## 3. Open your lab
 
+Choose Codespaces or native Linux. Both use the same lab commands after setup.
+
+### Codespaces
+
 [Open in GitHub Codespaces](https://codespaces.new/sefastech/clutta-playground), select `main`, and create the Codespace. Wait for **Ready for setup**. Startup verifies the latest official stable Clutta artifacts without connecting your account or generating traffic.
 
 ```bash
@@ -36,7 +40,36 @@ node --version
 docker info --format '{{.ServerVersion}}'
 ```
 
-**Continue when:** both commands return versions. First-time downloads and learning take longer than the five-minute screen demonstration. Codespaces usage depends on your GitHub account.
+### Local Linux
+
+Install Node.js 24 with npm, Git, `flock` (util-linux), `tar`, Docker Engine, and Docker Compose v2 with `--wait` support. Docker must be running and accessible to your regular user. Do not run the lab with `sudo` or change socket permissions to bypass an access error.
+
+Clone once, or enter your existing checkout:
+
+```bash
+git clone https://github.com/sefastech/clutta-playground.git
+cd clutta-playground
+```
+
+From the repository root, check prerequisites and install the locked dependencies:
+
+```bash
+node --version
+npm --version
+git --version
+flock --version
+tar --version
+docker info
+docker compose version
+npm ci --ignore-scripts
+npm --prefix scenarios/scheduler ci --ignore-scripts
+```
+
+Run each command only after the previous one succeeds. A fresh clone has no installed packages; skipping `npm ci` causes errors such as `Cannot find package 'yaml'`. Codespaces performs installation automatically. Repeat both install commands after pulling updates, with the lab stopped.
+
+On macOS or Windows, use Codespaces or the [configured Dev Container](troubleshooting.md#local-linux-instead), not a native terminal.
+
+**Continue when:** your chosen environment is ready: Codespaces prints **Ready for setup**, or every local check and install command succeeds. First-time downloads and learning take longer than the five-minute screen demonstration. Codespaces usage depends on your GitHub account. Both paths need internet access to verify the latest stable release and connect to Clutta.
 
 ## 4. Let Clutta learn what "finished" looks like
 

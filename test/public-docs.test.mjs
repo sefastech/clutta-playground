@@ -23,6 +23,26 @@ test('the public walkthrough separates progressive success checks from permissio
   assert.match(guide, /## When you run into issues\n/);
 });
 
+test('native Linux launch instructions install locked dependencies before starting', () => {
+  const rootInstall = 'npm ci --ignore-scripts';
+  const workloadInstall = 'npm --prefix scenarios/scheduler ci --ignore-scripts';
+  for (const file of ['README.md', 'docs/onboarding.md', 'docs/troubleshooting.md', 'scenarios/scheduler/README.md']) {
+    const source = read(file);
+    assert.ok(source.includes(rootInstall), `Missing root install in ${file}`);
+    assert.ok(source.includes(workloadInstall), `Missing workload install in ${file}`);
+    assert.ok(source.includes('docker info'), `Missing Docker check in ${file}`);
+    assert.ok(source.includes('docker compose version'), `Missing Compose check in ${file}`);
+  }
+  const guide = read('docs/onboarding.md');
+  assert.ok(guide.indexOf(rootInstall) < guide.indexOf('## 4.'));
+  assert.ok(guide.indexOf(workloadInstall) < guide.indexOf('## 4.'));
+  assert.match(guide, /### Local Linux/);
+  assert.match(guide, /Cannot find package 'yaml'/);
+  for (const command of [rootInstall, workloadInstall]) {
+    assert.ok(read('docs/source/clutta-walkthrough.tex').includes(command));
+  }
+});
+
 test('customer documentation has working local links and no private repository destinations', () => {
   for (const file of docs) {
     const source = read(file);

@@ -14,9 +14,13 @@ The outbox is a database list of notifications waiting to be delivered. The mail
 
 ## Run locally
 
-Requirements: Linux, Node.js 20 or newer, Git, `flock` (normally supplied by util-linux), Docker, and Docker Compose with `--wait` support. Codespaces supplies the configured Linux environment; rebuild/resume preservation and other host platforms are not certified. Run commands from the repository root.
+Use the [local Linux setup](../../docs/onboarding.md#local-linux): Node.js 24 with npm, Git, `flock` (normally supplied by util-linux), `tar`, Docker, and Docker Compose v2 with `--wait` support. Codespaces supplies the configured Linux environment; rebuild/resume preservation and other host platforms are not certified. Run commands from the repository root, stopping if any prerequisite or installation fails.
 
 ```bash
+npm ci --ignore-scripts
+npm --prefix scenarios/scheduler ci --ignore-scripts
+docker info
+docker compose version
 ./workload start
 ./workload verify
 ```

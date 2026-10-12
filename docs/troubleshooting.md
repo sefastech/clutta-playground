@@ -60,14 +60,20 @@ If Codespaces opens a recovery container without Node, open **Codespaces: View C
 
 Prefer Codespaces or a local **Dev Container** from macOS, Windows or Linux. For a local container, open this checkout in VS Code with the Dev Containers extension and choose **Dev Containers: Reopen in Container**. Docker must be running Linux containers. Wait for **Ready for setup**, then run the lab inside the container terminal, not your host shell. Native Linux prerequisites follow below.
 
-Use Node 24, Git, `flock`, `tar`, Docker, and Docker Compose v2 with `--wait` support. Clone this repository and run:
+Follow the complete [local Linux setup](onboarding.md#local-linux) before launching. Use Node 24 with npm, Git, `flock`, `tar`, Docker, and Docker Compose v2 with `--wait` support. From the repository root, run:
 
 ```bash
 npm ci --ignore-scripts
 npm --prefix scenarios/scheduler ci --ignore-scripts
+docker info
+docker compose version
 ```
 
 Then follow [step 4](onboarding.md#4-let-clutta-learn-what-finished-looks-like). Other host platforms are not certified by this lab.
+
+### Cannot find package 'yaml'
+
+The repository was cloned but its Node dependencies are missing. Run both `npm ci` commands above from the repository root, then retry `./lab start`. Do not install `yaml` globally or change the lockfile. Codespaces normally performs this setup automatically.
 
 ## Learning, activation, and detection
 
@@ -113,6 +119,8 @@ Before pulling updates or choosing a new stable runtime, repair if needed and ru
 
 ```bash
 git pull --ff-only
+npm ci --ignore-scripts
+npm --prefix scenarios/scheduler ci --ignore-scripts
 ./lab start
 ```
 

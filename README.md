@@ -54,9 +54,23 @@ This is the short first-look experience. The healthy controls and live Cloud che
 
 ### Full playground: prove it yourself
 
-Use **GitHub Codespaces in your browser** from Windows, macOS, or Linux. The lab runs inside its Linux environment. Native execution currently requires [Linux prerequisites](docs/troubleshooting.md#local-linux-instead).
+**Run in Codespaces, clone locally on Linux, or use the included Dev Container on macOS and Windows.** On macOS and Windows, run the commands inside the Linux container, not your native terminal. See the [local and Dev Container prerequisites](docs/troubleshooting.md#local-linux-instead). Mac and Windows Docker Desktop sessions still require live validation.
 
-Follow the [step-by-step guide](docs/onboarding.md) to create your account and dedicated project. Have your workspace ID, project ID, and workspace key ready. Wait for **Ready for setup**, then run commands in the repository's terminal:
+Follow the [step-by-step guide](docs/onboarding.md) to create your account and dedicated project. Have your workspace ID, project ID, and workspace key ready. In Codespaces, wait for **Ready for setup**.
+
+**Running locally on Linux?** Use Node.js 24 with npm, Git, `flock`, `tar`, and a running Docker daemon with Compose v2 (`--wait` support). From your cloned repository, install dependencies before starting:
+
+```bash
+npm ci --ignore-scripts
+npm --prefix scenarios/scheduler ci --ignore-scripts
+docker info
+docker compose version
+./lab start
+```
+
+Codespaces installs these dependencies automatically; a native clone does not. For cloning and prerequisite checks, use the [local Linux setup](docs/onboarding.md#local-linux). Continue only when each command succeeds. Do not run the lab with `sudo`.
+
+Then follow the same journey:
 
 | Action | Continue when |
 | --- | --- |

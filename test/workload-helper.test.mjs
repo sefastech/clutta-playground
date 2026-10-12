@@ -20,7 +20,7 @@ function command(program, args, env = process.env) {
 }
 
 test('simultaneous session mutations cannot overwrite the active pointer; kernel releases the lock on exit', async () => {
-  assert.equal(process.platform, 'linux', 'Helper lock proof requires Linux');
+  assert.equal(process.platform, 'linux', 'Run lock tests inside the configured workspace');
   const root = path.join(process.env.CLUTTA_PLAYGROUND_DATA_ROOT ?? path.join(homedir(), 'sanitized-cases/clutta-playground'), 'helper-tests');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(path.join(root, 'lock-proof-'));

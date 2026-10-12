@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { checkScriptInputs, trimInput } from '../scenarios/scheduler/src/input.mjs';
+import { requireLinuxWorkspace, WorkspaceRequiredError } from '../lib/workspace.mjs';
 
 const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -32,7 +33,8 @@ async function waitForDocker({ execute, options, log, now, sleep }) {
   }
 }
 
-export async function startCodespace({ execute = execFileSync, log = console.log, environment = process.env, now = () => performance.now(), sleep = delay } = {}) {
+export async function startCodespace({ execute = execFileSync, log = console.log, environment = process.env, platform = process.platform, now = () => performance.now(), sleep = delay } = {}) {
+  requireLinuxWorkspace(platform);
   const env = { ...environment };
   if (env.CLUTTA_PLAYGROUND_DATA_ROOT !== undefined) env.CLUTTA_PLAYGROUND_DATA_ROOT = trimInput(env.CLUTTA_PLAYGROUND_DATA_ROOT);
   checkScriptInputs([], env.CLUTTA_PLAYGROUND_DATA_ROOT);
@@ -62,7 +64,7 @@ export async function runCodespaceStartup({ lifecycle = false, report = console.
   try { await startCodespace(options); return 0; }
   catch (error) {
     report('Lab not ready. No Cloud scan or payment traffic was started by this hook.');
-    if (error instanceof DockerReadinessError) report(error.message);
+    if (error instanceof DockerReadinessError || error instanceof WorkspaceRequiredError) report(error.message);
     report('Fix the prerequisite or network error, then run node .devcontainer/startup.mjs. See docs/troubleshooting.md.');
     // An optional preparation failure must not replace the working Node container with recovery mode.
     // Manual preparation and ./lab start retain their strict failure boundaries.

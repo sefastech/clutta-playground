@@ -5,6 +5,13 @@ import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(process.env.LAB_TEST_CALLS, `${JSON.stringify({ args, inheritedKey: Boolean(process.env.CLUTTA_API_KEY) })}\n`);
 if (args[0] === 'container' && args[1] === 'ls') process.exit(0);
+if (args[0] === 'inspect' && process.env.LAB_TEST_SCAN_STATUS === 'exited') {
+  console.log(JSON.stringify({ Name: '/clutta-scheduler-abcdef123456',
+    Config: { Labels: { 'io.clutta.playground.run': 'clutta-playground-abcdef123456' },
+      Image: `sefastech/clutta-scan@sha256:${'b'.repeat(64)}` },
+    State: { Running: false, Status: 'exited', ExitCode: 1, Error: 'private-error-must-not-be-shared' } }));
+  process.exit(0);
+}
 if (args[0] === 'compose' && args.includes('down')) process.exit(0);
 if (args[0] === 'compose' && args.includes('exec')) {
   console.log(JSON.stringify({ scheduler: { paused: false }, database: { pending: 0 }, health: { status: 'ok' } }));

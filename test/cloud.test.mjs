@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { API_URL, CloudClient, requiredScopes, uuid, validateAccount, assertRoutes,
-  assertSource, readSource, assertCoverage, assertDefinition, loadedActivation,
+  assertSource, readSource, assertCoverage, assertCollectorRunning, assertDefinition, loadedActivation,
   evidencePayment, localInstance, assertInstance, assertCaseMember } from '../lib/cloud.mjs';
 
 // These are in-memory canonical wire fixtures, not Cloud outputs or real keys.
@@ -21,6 +21,21 @@ const serviceNames = ['payment-api', 'payment-worker', 'notification-scheduler']
 const events = ['payment.accepted', 'notification.queued', 'notification.delivered'];
 const writeScopes = ['write:scan.sources', 'write:scan.evidence', 'write:scan.detected-chains'];
 const copy = (value) => structuredClone(value);
+
+test('stopped and paused collectors fail before stale snapshots can suggest readiness', () => {
+  const name = 'clutta-scheduler-abcdef123456';
+  assert.doesNotThrow(() => assertCollectorRunning({ State: { Running: true, Status: 'running' } }, name));
+  for (const status of ['exited', 'dead', 'created', 'restarting', 'paused']) {
+    assert.throws(() => assertCollectorRunning({ State: { Running: status === 'paused', Status: status, ExitCode: 1,
+      Error: 'secret-error-must-not-be-printed' } }, name), (error) => {
+      assert.match(error.message, /exit code 1/);
+      assert.match(error.message, /docker logs --tail 80 clutta-scheduler-abcdef123456/);
+      assert.match(error.message, /not a business incident/);
+      assert.doesNotMatch(error.message, /secret-error/);
+      return true;
+    });
+  }
+});
 // composeSourceID preserves the provider path's leading slash on the wire.
 const evidenceSource = (index) => `${state.agentName}/file//var/log/clutta-playground/${roles[index]}.log`;
 
@@ -273,6 +288,21 @@ test('daemon coverage requires three owned file sources, recent accepted heartbe
   for (const invalid of [undefined, { ...health(), healthy: false }, { ...health(), state: 'retired' }]) {
     assert.throws(() => assertCoverage(snapshot(), invalid, now));
   }
+});
+
+test('readiness diagnoses independent blockers without echoing untrusted source values', () => {
+  const value = snapshot();
+  value.daemon.sources[0].name = 'secret-token-in-untrusted-path';
+  value.sync.heartbeat_consecutive_errors = 2;
+  value.sync.pulse_consecutive_errors = 1;
+  assert.throws(() => assertCoverage(value, { healthy: false, state: 'secret-cloud-value' }, now), (error) => {
+    assert.match(error.message, /coverage must match exactly/);
+    assert.match(error.message, /heartbeat synchronization reports errors/);
+    assert.match(error.message, /evidence synchronization reports errors/);
+    assert.match(error.message, /Cloud source health is not healthy and active/);
+    assert.doesNotMatch(error.message, /secret-token|secret-cloud/);
+    return true;
+  });
 });
 
 test('the demo definition requires three real anchored steps and an unchanged bounded learned deadline', () => {

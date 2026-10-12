@@ -54,7 +54,7 @@ This is the short first-look experience. The healthy controls and live Cloud che
 
 ### Full playground: prove it yourself
 
-Use **GitHub Codespaces in your browser** from Windows, macOS, or Linux. The lab runs inside its Linux environment. Native execution currently requires [Linux prerequisites](docs/troubleshooting.md#local-linux-instead).
+**Run in Codespaces, clone locally on Linux, or use the included Dev Container on macOS and Windows.** On macOS and Windows, run the commands inside the Linux container, not your native terminal. See the [local and Dev Container prerequisites](docs/troubleshooting.md#local-linux-instead). Mac and Windows Docker Desktop sessions still require live validation.
 
 Follow the [step-by-step guide](docs/onboarding.md) to create your account and dedicated project. Have your workspace ID, project ID, and workspace key ready. In Codespaces, wait for **Ready for setup**.
 

@@ -58,6 +58,8 @@ If Codespaces opens a recovery container without Node, open **Codespaces: View C
 
 ### Local Linux instead
 
+Prefer Codespaces or a local **Dev Container** from macOS, Windows or Linux. For a local container, open this checkout in VS Code with the Dev Containers extension and choose **Dev Containers: Reopen in Container**. Docker must be running Linux containers. Wait for **Ready for setup**, then run the lab inside the container terminal, not your host shell. Native Linux prerequisites follow below.
+
 Use Node 24, Git, `flock`, `tar`, Docker, and Docker Compose v2 with `--wait` support. Clone this repository and run:
 
 ```bash
@@ -68,6 +70,10 @@ npm --prefix scenarios/scheduler ci --ignore-scripts
 Then follow [step 4](onboarding.md#4-let-clutta-learn-what-finished-looks-like). Other host platforms are not certified by this lab.
 
 ## Learning, activation, and detection
+
+If the collector exits, the helper stops and prints a `docker logs` command for that collector. Readiness errors identify the missing check: log coverage, snapshot freshness, accepted heartbeat, synchronization, or Cloud source health. These are collection problems, not proof of an application failure. Correct the reported problem before retrying; do not bypass the checks.
+
+Every start checks the latest official stable release. Unchanged artifacts are reused only after checking their integrity against current release metadata. Missing artifacts are downloaded again; altered artifacts are rejected. An unavailable release endpoint does not trigger an offline fallback.
 
 | What you see | What to do |
 | --- | --- |
@@ -111,6 +117,8 @@ git pull --ff-only
 ```
 
 Stop if Git reports uncommitted or conflicting work. Source revisions and runtime versions must not mix inside an active run. Never reset changes or delete a lock file to force progress; an operating-system lock releases when its owning process exits.
+
+One generated formatting difference is accepted: the final newline in `.devcontainer/devcontainer-lock.json` may be present or absent. The helper does not rewrite it. Dependency, digest, permission, staged, and other source changes are still rejected.
 
 ## Report a problem
 

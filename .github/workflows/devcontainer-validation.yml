@@ -1,0 +1,47 @@
+name: Devcontainer creation and restart
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  devcontainer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Install pinned devcontainer validator
+        run: npm ci --prefix .devcontainer/validation --ignore-scripts --no-fund --no-audit
+      - name: Create the actual configured container
+        run: |
+          set -euo pipefail
+          .devcontainer/validation/node_modules/.bin/devcontainer up --workspace-folder "$GITHUB_WORKSPACE" --frozen-lockfile > /tmp/devcontainer-result.json
+          node -e 'const fs=require("fs");const lines=fs.readFileSync("/tmp/devcontainer-result.json","utf8").trim().split("\n");const r=JSON.parse(lines.at(-1));if(r.outcome!=="success"||!r.containerId)throw Error("Container creation failed");fs.writeFileSync("/tmp/lab-container-id",r.containerId)'
+      - name: Verify strict preparation and evidence ownership on first start
+        run: |
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" node .devcontainer/startup.mjs
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" node -e 'const fs=require("fs"),os=require("os"),p=os.homedir()+"/sanitized-cases";const s=fs.statSync(p);if(s.uid!==process.getuid()||(s.mode&0o077)!==0)throw Error("Evidence directory ownership or permissions failed");fs.writeFileSync(p+"/restart-proof","fake-data-marker",{mode:0o600})'
+      - name: Run the real owned workload from the prepared container checkout
+        run: |
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" node -e 'const fs=require("fs"),p=".devcontainer/devcontainer-lock.json";fs.writeFileSync(p,fs.readFileSync(p,"utf8").replace(/\n$/, ""))'
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload start
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload verify
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload stop
+      - name: Restart and verify preparation plus preserved evidence
+        run: |
+          docker restart "$(cat /tmp/lab-container-id)"
+          .devcontainer/validation/node_modules/.bin/devcontainer up --workspace-folder "$GITHUB_WORKSPACE" --frozen-lockfile
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" node .devcontainer/startup.mjs
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" node -e 'const fs=require("fs"),os=require("os");if(fs.readFileSync(os.homedir()+"/sanitized-cases/restart-proof","utf8")!=="fake-data-marker")throw Error("Restart lost evidence")'
+      - name: Stop this validation container
+        if: always()
+        run: |
+          if test -s /tmp/lab-container-id; then
+            docker stop "$(cat /tmp/lab-container-id)"
+          fi

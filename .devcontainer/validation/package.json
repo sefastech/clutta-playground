@@ -1,0 +1,5 @@
+{
+  "name": "clutta-devcontainer-validation",
+  "private": true,
+  "devDependencies": { "@devcontainers/cli": "0.89.0" }
+}

@@ -86,6 +86,20 @@ test('local repair runs before Cloud validation and does not pretend Cloud recov
   assert.equal(JSON.parse(readFileSync(path.join(fixture_.directory, 'active-cloud.json'))).stopped, false);
 });
 
+test('status reports a dead owned collector before any Cloud source read or stale readiness claim', async () => {
+  const fixture_ = fixture({ credentials: true });
+  const result = await command(['status'], { ...fixture_.env, LAB_TEST_ALLOW_ACCOUNT: 'yes', LAB_TEST_SCAN_STATUS: 'exited' });
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /Scan collector is not running \(exit code 1\)/);
+  assert.match(result.output, /docker logs --tail 80 clutta-scheduler-abcdef123456/);
+  assert.doesNotMatch(result.output, /private-error|offline-fixture-value|exclusive project route and live source coverage verified/);
+  const calls = readFileSync(fixture_.callsFile, 'utf8');
+  assert.ok(calls.includes('fixture-account-validation'));
+  assert.ok(calls.includes('inspect'));
+  assert.ok(!calls.includes('network-denied'));
+  assert.equal(JSON.parse(readFileSync(path.join(fixture_.directory, 'active-cloud.json'))).stopped, false);
+});
+
 test('a failed registration with no Cloud session can still stop the idle workload', async () => {
   const fixture_ = fixture({ cloud: false });
   const result = await command(['stop'], fixture_.env);

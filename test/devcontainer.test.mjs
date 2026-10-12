@@ -15,6 +15,11 @@ test('Codespaces pins its environment, runs setup on every start, and exposes no
   const features = Object.keys(config.features);
   assert.equal(features.length, 1);
   assert.match(features[0], /^ghcr\.io\/devcontainers\/features\/docker-in-docker@sha256:[a-f0-9]{64}$/);
+  const lock = JSON.parse(readFileSync(path.join(repository, '.devcontainer/devcontainer-lock.json'), 'utf8'));
+  assert.deepEqual(Object.keys(lock.features), features);
+  assert.equal(lock.features[features[0]].resolved, features[0]);
+  assert.equal(lock.features[features[0]].integrity, features[0].split('@')[1]);
+  assert.match(lock.features[features[0]].version, /^\d+\.\d+\.\d+$/);
   assert.equal(config.remoteUser, 'node');
   assert.deepEqual(config.postStartCommand, ['node', '.devcontainer/startup.mjs', '--codespaces-hook']);
   // Wait for dependency installation to finish before exposing lab commands.
@@ -29,6 +34,15 @@ test('Codespaces pins its environment, runs setup on every start, and exposes no
   for (const prohibited of ['initializeCommand', 'postAttachCommand', 'containerEnv', 'remoteEnv', 'workspaceMount']) {
     assert.equal(config[prohibited], undefined);
   }
+});
+
+test('container CI verifies the frozen feature lock and a real owned workload inside the workspace', () => {
+  const workflow = readFileSync(path.join(repository, '.github/workflows/devcontainer-validation.yml'), 'utf8');
+  assert.equal((workflow.match(/devcontainer up .*--frozen-lockfile/g) ?? []).length, 2);
+  for (const command of ['start', 'verify', 'stop']) {
+    assert.ok(workflow.includes(`devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload ${command}`));
+  }
+  assert.doesNotMatch(workflow, /CLUTTA_API_KEY|--no-lockfile|--skip-post-create/);
 });
 
 test('each startup verifies prerequisites and reinstalls lockfile dependencies before stable bootstrap', async () => {
@@ -207,4 +221,19 @@ test('unexpected transport errors are not printed as trusted readiness guidance'
     execute: () => { throw new Error('Docker untrusted credential-bearing details'); },
   }), 0);
   assert.ok(!messages.some((message) => message.includes('credential-bearing')));
+});
+
+test('native Mac and Windows startup explain the container path before running prerequisites', async () => {
+  for (const platform of ['darwin', 'win32']) {
+    const calls = [], messages = [];
+    const status = await runCodespaceStartup({
+      platform, environment: { CLUTTA_API_KEY: 'never-display-this' },
+      execute: (...call) => calls.push(call), log: (message) => messages.push(message),
+      report: (message) => messages.push(message),
+    });
+    assert.equal(status, 1);
+    assert.deepEqual(calls, []);
+    assert.ok(messages.some((message) => message.includes('Codespaces or Dev Container terminal')));
+    assert.ok(!messages.some((message) => message.includes('never-display-this') || message.startsWith('Ready')));
+  }
 });

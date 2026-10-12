@@ -32,6 +32,8 @@ jobs:
           node --check lab
           node --check lib/cloud.mjs
           node --check lib/release.mjs
+          node --check lib/workspace.mjs
+          node --check lib/source.mjs
           node --test test/*.test.mjs
           docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL "clutta-playground-scheduler:$GITHUB_SHA" npm test
           docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL "clutta-playground-scheduler:$GITHUB_SHA" npm run check

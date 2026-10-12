@@ -6,6 +6,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
+import { requireLinuxWorkspace } from './lib/workspace.mjs';
+import { sourceRevision } from './lib/source.mjs';
 
 const repository = path.dirname(fileURLToPath(import.meta.url));
 const dataRootInput = trimInput(process.env.CLUTTA_PLAYGROUND_DATA_ROOT);
@@ -38,29 +40,6 @@ async function capture(program, arguments_, options = {}) {
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.once('error', reject);
     child.once('exit', (code) => code === 0 ? resolve(output.trim()) : reject(new Error(`${program} identity check failed`)));
-  });
-}
-
-async function sourceRevision() {
-  await new Promise((resolve, reject) => {
-    const child = spawn('git', ['status', '--porcelain'], { cwd: repository, stdio: ['ignore', 'pipe', 'ignore'] });
-    let changes = '';
-    child.stdout.on('data', (chunk) => { changes += chunk; });
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code !== 0 || changes.trim()) reject(new Error('Run a clean committed checkout so image and receipt identify the actual source. Preserve changes on a branch; do not reset them.'));
-      else resolve();
-    });
-  });
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', ['rev-parse', 'HEAD'], { cwd: repository, stdio: ['ignore', 'pipe', 'ignore'] });
-    let result = '';
-    child.stdout.on('data', (chunk) => { result += chunk; });
-    child.once('error', reject);
-    child.once('exit', (code) => {
-      if (code !== 0 || !/^[a-f0-9]{40}$/.test(result.trim())) reject(new Error('Could not identify checked-out source revision'));
-      else resolve(result.trim());
-    });
   });
 }
 
@@ -114,7 +93,7 @@ try {
     throw new Error(`Unexpected arguments for ${command}; no operation was performed`);
   }
   if (['start', 'stop'].includes(command) && process.env.CLUTTA_WORKLOAD_LOCK_HELD !== base) {
-    if (process.platform !== 'linux') throw new Error('The current helper requires Linux flock; other host support is not verified');
+    requireLinuxWorkspace();
     mkdirSync(base, { recursive: true, mode: 0o700 });
     protectDirectory(realpathSync(base));
     await run('flock', ['--nonblock', '--conflict-exit-code', '75', path.join(base, 'operation.lock'),
@@ -126,7 +105,7 @@ try {
     mkdirSync(base, { recursive: true, mode: 0o700 });
     protectDirectory(realpathSync(base));
     let state = existsSync(activeFile) ? readState() : null;
-    const revision = await sourceRevision();
+    const revision = await sourceRevision(repository);
     if (state && !state.stopped && state.sourceRevision !== revision) {
       throw new Error('Source revision changed during this run. Stop it first; a new start preserves the old data.');
     }

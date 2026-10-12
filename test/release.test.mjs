@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, readdir, stat, symlink } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -206,6 +206,59 @@ test('every install resolves latest again and preserves earlier verified bundles
   assert.equal((await readdir(join(destination, 'versions'))).length, 2);
 });
 
+test('unchanged official metadata reuses an intact bundle without artifact or registry downloads', async () => {
+  const destination = await directory('reuse-');
+  const data = fixture();
+  const prior = await install(data, destination);
+  data.calls.length = 0;
+  const next = await install(data, destination);
+  assert.deepEqual(next, prior);
+  assert.deepEqual(data.calls.map(({ url }) => url), [RELEASES_URL]);
+  assert.equal((await readdir(join(destination, 'versions'))).length, 1);
+});
+
+test('an incomplete bundle is downloaded again without deleting retained artifacts', async () => {
+  const destination = await directory('missing-cache-');
+  const data = fixture();
+  const prior = await install(data, destination);
+  await unlink(prior.cliPath);
+  data.calls.length = 0;
+  const next = await install(data, destination);
+  assert.notEqual(next.cliPath, prior.cliPath);
+  assert.ok(data.calls.some(({ url }) => url.endsWith('/clutta-linux-amd64')));
+  assert.deepEqual(await readFile(next.cliPath), data.cli);
+  assert.equal((await readdir(join(destination, 'versions'))).length, 2);
+});
+
+test('tampered cached binaries cannot be reused or silently accepted', async () => {
+  const destination = await directory('tampered-cache-');
+  const data = fixture();
+  const prior = await install(data, destination);
+  const corrupted = Buffer.from(data.cli);
+  corrupted[corrupted.length - 1] ^= 1;
+  await writeFile(prior.cliPath, corrupted);
+  data.calls.length = 0;
+  await assert.rejects(install(data, destination), /no longer matches official release metadata/);
+  assert.deepEqual(data.calls.map(({ url }) => url), [RELEASES_URL]);
+});
+
+test('cached receipt cannot redirect artifact verification outside the owned bundle', async () => {
+  const destination = await directory('redirected-cache-');
+  const data = fixture();
+  const prior = await install(data, destination);
+  await writeFile(prior.receiptPath, JSON.stringify({ ...prior, cliPath: '/another-user/clutta' }));
+  await assert.rejects(install(data, destination), /paths escaped the owned bundle/);
+});
+
+test('cached receipt cannot silently replace the verified immutable image', async () => {
+  const destination = await directory('modified-image-cache-');
+  const data = fixture();
+  const prior = await install(data, destination);
+  const changed = `sha256:${'d'.repeat(64)}`;
+  await writeFile(prior.receiptPath, JSON.stringify({ ...prior, scanImageDigest: changed, scanImage: `sefastech/clutta-scan@${changed}` }));
+  await assert.rejects(install(data, destination), /differs from its verified bundle/);
+});
+
 test('unreachable latest fails explicitly even when an older verified receipt exists', async () => {
   const destination = await directory('no-fallback-');
   const prior = await install(fixture(), destination);
@@ -304,7 +357,7 @@ test('a failed late chart check leaves the previous current receipt and artifact
   const original = fixture();
   const prior = await install(original, destination);
   const priorReceipt = await readFile(prior.receiptPath);
-  const next = fixture({ chartYAML: 'apiVersion: v2\nname: wrong\nversion: 0.3.19\nappVersion: v0.2.20\n' });
+  const next = fixture({ tag: 'v0.2.22', chartYAML: 'apiVersion: v2\nname: wrong\nversion: 0.3.19\nappVersion: v0.2.22\n' });
   await assert.rejects(install(next, destination), /Chart.yaml does not match/);
   assert.deepEqual(await readFile(prior.receiptPath), priorReceipt);
   assert.deepEqual(await readFile(prior.cliPath), original.cli);

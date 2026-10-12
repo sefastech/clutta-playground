@@ -9,9 +9,10 @@ import { promisify } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { installRuntime } from './lib/release.mjs';
+import { requireLinuxWorkspace } from './lib/workspace.mjs';
 import { appendHiddenCharacter, checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
 import { API_URL, APP_URL, CloudClient, uuid, validateAccount, readSource, readDaemon, assertCoverage,
-  assertDefinition, loadedActivation, localInstance, assertInstance, assertCaseMember } from './lib/cloud.mjs';
+  assertCollectorRunning, assertDefinition, loadedActivation, localInstance, assertInstance, assertCaseMember } from './lib/cloud.mjs';
 
 const execute = promisify(execFile);
 const repository = path.dirname(fileURLToPath(import.meta.url));
@@ -126,22 +127,23 @@ function lines(file) {
   return result;
 }
 
-async function waitFor(label, check, seconds, { quiet = false } = {}) {
+async function waitFor(label, check, seconds, { quiet = false, diagnostic = () => '' } = {}) {
   const started = Date.now();
   let lastMessage = 0;
   while (Date.now() - started < seconds * 1000) {
     const result = await check();
     if (result) return result;
     if (!quiet && Date.now() - lastMessage > 20000) {
-      console.log(`${label}: waiting (${Math.round((Date.now() - started) / 1000)}s). This is a live check, not a replay.`);
+      console.log(`${label}: waiting (${Math.round((Date.now() - started) / 1000)}s). This is a live check, not a replay. ${diagnostic()}`);
       lastMessage = Date.now();
     }
     await sleep(2000);
   }
-  throw new Error(`${label} did not pass within ${seconds}s. Evidence is preserved. Run ./lab status; do not treat this as a successful demo.`);
+  throw new Error(`${label} did not pass within ${seconds}s. Evidence is preserved. ${diagnostic()} Run ./lab status; do not treat this as a successful demo.`);
 }
 
 async function observe(client, session) {
+  assertCollectorRunning(await container(session), session.agentName);
   const source = await readSource(client, session);
   const snapshot = readDaemon(workspaceDirectory(session));
   assertCoverage(snapshot, source.health);
@@ -164,7 +166,6 @@ async function startScan(session) {
   for (const role of ['api', 'worker', 'scheduler']) closeSync(openSync(path.join(directory, 'logs', `${role}.log`), 'a', 0o600));
   const config = path.join(directory, 'scan.yaml');
   writeFileSync(config, `version: 2\nscope:\n  project_id: ${session.projectId}\ncollection:\n  mode: host\nanalysis:\n  mode: manual\nflow_discovery:\n  enabled: true\n  correlation_field: ""\n  window_seconds: 60\n  mode: local\nconnection:\n  mode: cloud\n`, { mode: 0o600 });
-  await run('docker', ['pull', runtime.scanImage]);
   const exists = await run('docker', ['container', 'ls', '--all', '--filter', `name=^/${agentName}$`, '--format', '{{.Names}}']);
   if (exists) {
     const actual = await container(session);
@@ -172,6 +173,7 @@ async function startScan(session) {
     await run('docker', ['start', agentName]);
     return;
   }
+  await run('docker', ['pull', runtime.scanImage]);
   await run('docker', ['run', '--detach', '--name', agentName, '--hostname', agentName,
     '--label', `io.clutta.playground.run=${session.workloadProject}`, '--user', `${process.getuid()}:${process.getgid()}`,
     '--workdir', '/var/clutta', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--init', '--tmpfs', '/tmp',
@@ -210,7 +212,7 @@ async function register(client, credentials, runtime) {
 }
 
 async function start(client, credentials) {
-  console.log('1/4 Checking the latest stable Clutta artifacts. No RC or cached-current fallback.');
+  console.log('1/4 Checking the latest stable Clutta artifacts. Verified unchanged artifacts can be reused; no RC or offline-current fallback.');
   const runtime = await freshRuntime();
   let session = existsSync(sessionFile) ? state() : null;
   if (session && !session.stopped) {
@@ -222,13 +224,14 @@ async function start(client, credentials) {
   } else session = await register(client, credentials, runtime);
   console.log('2/4 Starting isolated Scan; auditing its registered project route before any payments.');
   await startScan(session);
+  let readinessDiagnostic = '';
   const ready = await waitFor('Source readiness', async () => {
-    await container(session);
+    assertCollectorRunning(await container(session), session.agentName);
     const source = await readSource(client, session);
-    let snapshot; try { snapshot = readDaemon(workspaceDirectory(session)); } catch { return null; }
-    try { assertCoverage(snapshot, source.health); } catch { return null; }
+    let snapshot; try { snapshot = readDaemon(workspaceDirectory(session)); } catch { readinessDiagnostic = 'Scan has not written all readiness snapshots.'; return null; }
+    try { assertCoverage(snapshot, source.health); } catch (error) { readinessDiagnostic = error.message; return null; }
     return { source, snapshot };
-  }, 120);
+  }, 120, { diagnostic: () => `${readinessDiagnostic} Retry ./lab start after correcting the reported check; the owned session is preserved.` });
   session.installationId = ready.snapshot.sync.installation_id;
   if (session.proposalId) {
     const active = loadedActivation(ready.snapshot, ready.source.catalog, session.proposalId, session);
@@ -409,7 +412,7 @@ try {
     console.log('Check: ./lab status. Finish safely: ./lab stop. Setup only: ./lab bootstrap.');
     process.exit(0);
   }
-  if (process.platform !== 'linux') throw new Error('This verified helper requires Linux. Use the Codespace or Linux with Docker Compose.');
+  requireLinuxWorkspace();
   if (base === path.parse(base).root || base === homedir() || base === repository || base.startsWith(`${repository}${path.sep}`)) throw new Error('Choose an isolated sanitized-cases data root outside Git and the home root.');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   if (realpathSync(base) !== base || (lstatSync(base).mode & 0o077) || lstatSync(base).uid !== process.getuid()) throw new Error('The lab data root must be owned, private, and not symlinked.');
@@ -417,7 +420,7 @@ try {
     const child = spawn('flock', ['--nonblock', '--conflict-exit-code', '75', path.join(base, 'lab-operation.lock'), process.execPath, fileURLToPath(import.meta.url), command, ...args], {
       env: { ...dataEnv, CLUTTA_PLAYGROUND_LOCK_HELD: base }, stdio: 'inherit',
     });
-    child.once('error', () => { console.error('Linux flock is required to protect concurrent lab operations.'); process.exitCode = 1; });
+    child.once('error', () => { console.error('The workspace lock tool is unavailable. Rebuild the configured container; do not bypass the lock or delete lab data.'); process.exitCode = 1; });
     child.once('exit', (code) => { if (code === 75) console.error('Another lab command owns this run. Wait for it to finish and retry.'); process.exitCode = code ?? 1; });
   } else if (command === 'bootstrap') {
     const runtime = await freshRuntime();
@@ -455,7 +458,7 @@ try {
       if (session.workspaceId !== credentials.workspace_id || session.projectId !== credentials.project_id) throw new Error('Saved account and active session differ. No operation was performed.');
       if (command === 'break') await breakScheduler(client, session);
       if (command === 'status') {
-        await container(session); await observe(client, session);
+        await observe(client, session);
         const actual = await work('status');
         console.log(`${session.phase}: Clutta ${session.runtime.tag}, exclusive project route and live source coverage verified.`);
         console.log(`Payments: ${actual.database.delivered} delivered, ${actual.database.pending} pending. Scheduler ${actual.scheduler.paused ? 'paused' : 'running'}; HTTP health ${actual.health.status}.`);

@@ -1,0 +1,23 @@
+# Overlay the owned scheduler infrastructure; no host ports or new credentials.
+services:
+  postgres:
+    volumes:
+      - ../payment-ordering/schema.sql:/docker-entrypoint-initdb.d/02-ordering.sql:ro
+  api:
+    image: clutta-playground-ordering:${SOURCE_REVISION:?Set SOURCE_REVISION}
+    build:
+      context: ..
+      dockerfile: payment-ordering/Dockerfile
+    environment:
+      LAB_SCENARIO: payment-ordering
+  worker:
+    image: clutta-playground-ordering:${SOURCE_REVISION:?Set SOURCE_REVISION}
+    environment:
+      LAB_SCENARIO: payment-ordering
+  scheduler:
+    image: clutta-playground-ordering:${SOURCE_REVISION:?Set SOURCE_REVISION}
+    environment:
+      LAB_SCENARIO: payment-ordering
+  check:
+    image: clutta-playground-ordering:${SOURCE_REVISION:?Set SOURCE_REVISION}
+    command: [node, ../payment-ordering/verify.mjs]

@@ -33,6 +33,11 @@ jobs:
           .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload start
           .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload verify
           .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload stop
+      - name: Run payment ordering in the same prepared container
+        run: |
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" env CLUTTA_PLAYGROUND_SCENARIO=payment-ordering ./workload start
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" env CLUTTA_PLAYGROUND_SCENARIO=payment-ordering ./workload verify
+          .devcontainer/validation/node_modules/.bin/devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" env CLUTTA_PLAYGROUND_SCENARIO=payment-ordering ./workload stop
       - name: Restart and verify preparation plus preserved evidence
         run: |
           docker restart "$(cat /tmp/lab-container-id)"

@@ -130,6 +130,10 @@ One generated formatting difference is accepted: the final newline in `.devconta
 
 ## Report a problem
 
+For payment ordering, use `./lab status payment-ordering` and retry with the same scenario suffix. Its data stays separately under `~/sanitized-cases/clutta-playground/payment-ordering`.
+
+If local state was lost but the flow is still approved in Clutta, use `./lab start --existing-flow payment-ordering`. Enter the same project and approved proposal ID. This creates fresh local state without relearning; it does not recover deleted evidence. Keep data outside `/tmp`.
+
 [Open an issue](https://github.com/sefastech/clutta-playground/issues) with the failed stage, approximate time, artifact version, expected result, actual result, and a reviewed secret-free excerpt. State unknown fields as unknown.
 
 Never attach a workspace key, UI session token, `lab-auth.json`, Scan state, or an unreviewed receipt. Generated data belongs in `sanitized-cases`, not Git. No extra playground analytics beacon is installed; authenticated lab evidence goes to Clutta as part of running the connected demo.

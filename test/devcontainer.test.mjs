@@ -41,6 +41,7 @@ test('container CI verifies the frozen feature lock and a real owned workload in
   assert.equal((workflow.match(/devcontainer up .*--frozen-lockfile/g) ?? []).length, 2);
   for (const command of ['start', 'verify', 'stop']) {
     assert.ok(workflow.includes(`devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" ./workload ${command}`));
+    assert.ok(workflow.includes(`devcontainer exec --workspace-folder "$GITHUB_WORKSPACE" env CLUTTA_PLAYGROUND_SCENARIO=payment-ordering ./workload ${command}`));
   }
   assert.doesNotMatch(workflow, /CLUTTA_API_KEY|--no-lockfile|--skip-post-create/);
 });

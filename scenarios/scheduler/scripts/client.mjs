@@ -38,7 +38,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [command, ...args] = process.argv.slice(2).map(trimInput);
   try {
     checkScriptInputs([command, ...args]);
-    const maximumArguments = { traffic: 2, payment: 0, status: 1, pause: 0, resume: 0 };
+    const maximumArguments = { traffic: 2, payment: 0, status: 1, pause: 0, resume: 0, 'order-on': 0, 'order-off': 0 };
     if (command in maximumArguments && args.length > maximumArguments[command]) throw new Error('Unexpected command arguments');
     let result;
     if (command === 'traffic') {
@@ -53,6 +53,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         scheduler: await request('scheduler', '/control'),
         health: await request('scheduler', '/health'),
       };
+    } else if (command === 'order-on' || command === 'order-off') {
+      result = await request('api', `/control/${command}`, { method: 'POST' });
     } else if (command === 'pause' || command === 'resume') {
       result = await request('scheduler', `/control/${command}`, { method: 'POST' });
     } else {

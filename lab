@@ -10,18 +10,26 @@ import { createInterface } from 'node:readline/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { installRuntime } from './lib/release.mjs';
 import { requireLinuxWorkspace } from './lib/workspace.mjs';
+import { scenarioName, scenarioRoot } from './lib/scenario.mjs';
+import { reuseIntent, reusableFlow, loadedReusableFlow } from './lib/reuse-flow.mjs';
+import { assertOrderingTruth } from './scenarios/payment-ordering/truth.mjs';
 import { appendHiddenCharacter, checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
 import { API_URL, APP_URL, CloudClient, uuid, validateAccount, readSource, readDaemon, assertCoverage,
   assertCollectorRunning, assertDefinition, loadedActivation, localInstance, assertInstance, assertCaseMember } from './lib/cloud.mjs';
 
 const execute = promisify(execFile);
 const repository = path.dirname(fileURLToPath(import.meta.url));
+const [command, ...args] = process.argv.slice(2).map(trimInput);
+const explicitScenario = args.at(-1) === 'payment-ordering' ? args.pop() : undefined;
+const scenario = scenarioName(explicitScenario ?? process.env.CLUTTA_PLAYGROUND_SCENARIO);
+const scenarioSuffix = scenario === 'payment-ordering' ? ' payment-ordering' : '';
+const scenarioLabel = scenario === 'payment-ordering' ? 'Payment ordering' : 'Scheduler';
 const dataRootInput = trimInput(process.env.CLUTTA_PLAYGROUND_DATA_ROOT);
-const base = path.resolve(dataRootInput ?? path.join(homedir(), 'sanitized-cases/clutta-playground'));
+const base = path.resolve(dataRootInput ?? scenarioRoot(path.join(homedir(), 'sanitized-cases/clutta-playground'), scenario));
 const credentialsFile = path.join(base, 'lab-auth.json');
 const sessionFile = path.join(base, 'active-cloud.json');
-const [command, ...args] = process.argv.slice(2).map(trimInput);
-const dataEnv = { ...process.env, CLUTTA_PLAYGROUND_DATA_ROOT: base };
+const reuseFile = path.join(base, 'reuse-flow.json');
+const dataEnv = { ...process.env, CLUTTA_PLAYGROUND_DATA_ROOT: base, CLUTTA_PLAYGROUND_SCENARIO: scenario };
 for (const key of Object.keys(dataEnv)) if (key.startsWith('CLUTTA_') && !key.startsWith('CLUTTA_PLAYGROUND_')) delete dataEnv[key];
 
 function save(file, value) {
@@ -41,7 +49,7 @@ function owned(file) {
 function state() {
   const result = owned(sessionFile);
   const workload = owned(path.join(base, 'active-workload.json'));
-  if (result.workloadProject !== workload.project || result.directory !== workload.directory || result.directory !== path.join(realpathSync(base), workload.project) ||
+  if ((result.scenario ?? 'scheduler') !== scenario || (workload.scenario ?? 'scheduler') !== scenario || result.workloadProject !== workload.project || result.directory !== workload.directory || result.directory !== path.join(realpathSync(base), workload.project) ||
       !/^clutta-playground-[a-f0-9]{12}$/.test(workload.project) || result.agentName !== `clutta-scheduler-${workload.project.slice(-12)}`) {
     throw new Error('The Cloud session does not identify this owned workload. No operation was performed.');
   }
@@ -100,13 +108,13 @@ async function account() {
     await validateAccount(client, credentials.workspace_id);
     return { credentials, client };
   }
-  if (!process.stdin.isTTY) throw new Error(`Sign up at ${APP_URL}/signup, create a Scheduler lab project, then run ./lab start in the terminal. No key was assumed.`);
-  console.log(`First run: use your own account at ${APP_URL}. Create a dedicated Scheduler lab project, then open its Connections page.`);
+  if (!process.stdin.isTTY) throw new Error(`Sign up at ${APP_URL}/signup, create a ${scenarioLabel} lab project, then run ./lab start${scenarioSuffix} in the terminal. No key was assumed.`);
+  console.log(`First run: use your own account at ${APP_URL}. ${args.includes('--existing-flow') || existsSync(reuseFile) ? 'Open Connections on the existing approved flow project.' : `Create a dedicated ${scenarioLabel} lab project, then open its Connections page.`}`);
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   let workspaceId, projectId;
   try {
     workspaceId = uuid(trimInput(await prompt.question('Workspace ID from Connections: ')), 'Workspace ID');
-    projectId = uuid(trimInput(await prompt.question('Scheduler lab project ID: ')), 'Project ID');
+    projectId = uuid(trimInput(await prompt.question(`${scenarioLabel} lab project ID: `)), 'Project ID');
   } finally { prompt.close(); }
   const key = await maskedPrompt();
   const client = new CloudClient(key);
@@ -115,6 +123,22 @@ async function account() {
   save(credentialsFile, credentials);
   console.log('Workspace verified. Key saved privately outside Git; host Clutta credentials were not changed.');
   return { credentials, client };
+}
+
+async function chooseReuse(credentials, session) {
+  const target = { workspaceId: credentials.workspace_id, projectId: credentials.project_id, scenario, proposalId: session?.proposalId };
+  if (existsSync(reuseFile)) return reuseIntent(owned(reuseFile), target);
+  if (!args.includes('--existing-flow')) return null;
+  if (session && !session.stopped) throw new Error('An active session already exists. Its flow was not replaced. Use ordinary ./lab start to resume it.');
+  if (!process.stdin.isTTY) throw new Error('Run --existing-flow in a terminal to choose the approved proposal.');
+  console.log('This creates fresh local state, not a recovery of lost payments or evidence. Use the existing project and its approved candidate.');
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  let proposalId;
+  try { proposalId = uuid(trimInput(await prompt.question('Approved proposal ID from the candidate URL: ')), 'Approved proposal ID'); }
+  finally { prompt.close(); }
+  const intent = { ...target, proposalId };
+  save(reuseFile, intent);
+  return intent;
 }
 
 const workspaceDirectory = (session) => path.join(session.directory, 'scan-state/workspaces', session.workspaceId);
@@ -165,7 +189,7 @@ async function startScan(session) {
   for (const folder of ['scan-home', 'scan-state']) mkdirSync(path.join(directory, folder), { recursive: true, mode: 0o700 });
   for (const role of ['api', 'worker', 'scheduler']) closeSync(openSync(path.join(directory, 'logs', `${role}.log`), 'a', 0o600));
   const config = path.join(directory, 'scan.yaml');
-  writeFileSync(config, `version: 2\nscope:\n  project_id: ${session.projectId}\ncollection:\n  mode: host\nanalysis:\n  mode: manual\nflow_discovery:\n  enabled: true\n  correlation_field: ""\n  window_seconds: 60\n  mode: local\nconnection:\n  mode: cloud\n`, { mode: 0o600 });
+  writeFileSync(config, `version: 2\nscope:\n  project_id: ${session.projectId}\ncollection:\n  mode: host\nanalysis:\n  mode: manual\nflow_discovery:\n  enabled: ${session.reusedFlow ? 'false' : 'true'}\n  correlation_field: ""\n  window_seconds: 60\n  mode: local\nconnection:\n  mode: cloud\n`, { mode: 0o600 });
   const exists = await run('docker', ['container', 'ls', '--all', '--filter', `name=^/${agentName}$`, '--format', '{{.Names}}']);
   if (exists) {
     const actual = await container(session);
@@ -193,7 +217,7 @@ async function register(client, credentials, runtime) {
   console.log('Building and starting the three idle workload services. First-time downloads/builds can take extra time.');
   await work('start');
   const workload = owned(path.join(base, 'active-workload.json'));
-  const session = { workloadProject: workload.project, directory: workload.directory,
+  const session = { scenario, workloadProject: workload.project, directory: workload.directory,
     workspaceId: credentials.workspace_id, projectId: credentials.project_id,
     agentName: `clutta-scheduler-${workload.project.slice(-12)}`, runtime,
     startedAt: new Date().toISOString(), phase: 'Connecting', stopped: false };
@@ -212,6 +236,8 @@ async function register(client, credentials, runtime) {
 }
 
 async function start(client, credentials) {
+  const prior = existsSync(sessionFile) ? state() : null;
+  const intent = await chooseReuse(credentials, prior);
   console.log('1/4 Checking the latest stable Clutta artifacts. Verified unchanged artifacts can be reused; no RC or offline-current fallback.');
   const runtime = await freshRuntime();
   let session = existsSync(sessionFile) ? state() : null;
@@ -222,6 +248,15 @@ async function start(client, credentials) {
     await work('start');
     session.runtime = runtime;
   } else session = await register(client, credentials, runtime);
+  if (intent) {
+    reuseIntent(intent, session);
+    const source = await readSource(client, session);
+    reusableFlow(source.catalog, intent.proposalId, session);
+    session.proposalId = intent.proposalId;
+    session.reusedFlow = true;
+    session.phase = 'Waiting for approved flow loading';
+    save(sessionFile, session);
+  }
   console.log('2/4 Starting isolated Scan; auditing its registered project route before any payments.');
   await startScan(session);
   let readinessDiagnostic = '';
@@ -233,11 +268,19 @@ async function start(client, credentials) {
     return { source, snapshot };
   }, 120, { diagnostic: () => `${readinessDiagnostic} Retry ./lab start after correcting the reported check; the owned session is preserved.` });
   session.installationId = ready.snapshot.sync.installation_id;
+  if (session.reusedFlow) {
+    save(sessionFile, session);
+    await activation(client, session);
+    session.phase = 'Monitoring'; save(sessionFile, session);
+    console.log('Approved flow verified and loaded. Fresh local state only; no old evidence was restored or new learning performed.');
+    console.log(`Next: ./lab break${scenarioSuffix} (healthy monitored controls must pass before any fault).`);
+    return;
+  }
   if (session.proposalId) {
     const active = loadedActivation(ready.snapshot, ready.source.catalog, session.proposalId, session);
     console.log(active ? 'Existing human-approved flow is loaded; no new learning or approval was performed.' : 'Your saved proposal is ready for human review or activation propagation.');
     console.log(`Flow: ${APP_URL}/projects/${session.projectId}/flows/${active ? `active/${active.definition.id}/${active.definition.version}` : `candidates/${session.proposalId}`}`);
-    console.log(session.fault ? 'A prior pause is preserved. Next: ./lab repair' : 'Next: ./lab break');
+    console.log(session.fault ? `A prior fault is preserved. Next: ./lab repair${scenarioSuffix}` : `Next: ./lab break${scenarioSuffix}`);
     save(sessionFile, session);
     return;
   }
@@ -265,18 +308,18 @@ async function start(client, credentials) {
   save(path.join(session.directory, 'receipts', `proposal-${randomUUID()}.json`), proposal);
   console.log(`Review needed: ${APP_URL}/projects/${session.projectId}/flows/candidates/${session.proposalId}`);
   console.log('Review the three real steps, cited runs, and deadline. Approve and activate the flow in your browser.');
-  console.log('Next: ./lab break (it will verify activation and healthy monitored runs before pausing anything).');
+  console.log(`Next: ./lab break${scenarioSuffix} (it verifies activation and healthy monitored runs before injecting a fault).`);
 }
 
 async function activation(client, session) {
   if (!session.proposalId) throw new Error('Run ./lab start and complete human review first.');
   return waitFor('Human activation and daemon loading', async () => {
     const { source, snapshot } = await observe(client, session);
-    return loadedActivation(snapshot, source.catalog, session.proposalId, session);
+    return (session.reusedFlow ? loadedReusableFlow : loadedActivation)(snapshot, source.catalog, session.proposalId, session);
   }, 180);
 }
 
-async function monitored(client, session, active, payment, { complete = true } = {}) {
+async function monitored(client, session, active, payment, { complete = true, allowViolations = false } = {}) {
   const directory = workspaceDirectory(session);
   const instanceId = await waitFor('Live authoritative matching', async () => {
     await observe(client, session);
@@ -288,7 +331,7 @@ async function monitored(client, session, active, payment, { complete = true } =
     if (!row) return null;
     if (complete && row.state !== 'completed') return null;
     if (row.lineage?.availability !== 'available') return null;
-    return assertInstance(row, payment.payment_id, active, session, { complete });
+    return assertInstance(row, payment.payment_id, active, session, { complete, allowViolations });
   }, 180);
   return instance;
 }
@@ -306,6 +349,7 @@ async function healthyControls(client, session, active) {
     return Date.now() >= observationUntil;
   }, Math.ceil(active.definition.deadline_ms / 1000) + 30);
   for (let index = 0; index < controls.length; index++) {
+    if (scenario === 'payment-ordering') assertOrderingTruth(await work('status', payments[index].payment_id), false);
     const instance = await client.request(`/v1/incident/scan/instances/${controls[index].instance_id}?project_id=${session.projectId}`);
     controls[index] = assertInstance(instance, payments[index].payment_id, active, session);
   }
@@ -316,7 +360,7 @@ async function healthyControls(client, session, active) {
 async function caseFile(client, session, active, instance) {
   return waitFor('Fault-attributed Case File', async () => {
     await observe(client, session);
-    const query = new URLSearchParams({ project_id: session.projectId, violation_kind: 'missing_step', limit: '100', offset: '0' });
+    const query = new URLSearchParams({ project_id: session.projectId, violation_kind: scenario === 'payment-ordering' ? 'out_of_order' : 'missing_step', limit: '100', offset: '0' });
     const list = await client.request(`/v1/incident/scan/case-files?${query}`);
     if (!Array.isArray(list.case_files)) throw new Error('Case File response changed; no finding was assumed.');
     for (const file of list.case_files.filter((file) => file.chain?.chain_id === active.definition.id && file.chain.chain_version === active.definition.version)) {
@@ -375,18 +419,56 @@ async function breakScheduler(client, session) {
   console.log('Next: ./lab repair');
 }
 
+async function breakOrdering(client, session) {
+  const active = await activation(client, session);
+  if (session.fault && (session.active?.definition_fingerprint !== active.definition_fingerprint || session.active?.catalog_generation !== active.catalog_generation)) throw new Error('Flow changed after the fault. Repair before another proof.');
+  if (!session.fault) {
+    await healthyControls(client, session, active);
+    const current = await activation(client, session);
+    if (current.definition_fingerprint !== active.definition_fingerprint || current.catalog_generation !== active.catalog_generation) throw new Error('Activation changed during healthy controls');
+    session.active = active;
+    session.fault = { startedAt: new Date().toISOString() };
+    save(sessionFile, session);
+    try {
+      await work('order-on');
+      session.fault.payment = await work('payment');
+      save(sessionFile, session);
+    } finally { await work('order-off'); }
+  }
+  if (!session.fault.payment) throw new Error('Interrupted fault submission. Run ./lab repair payment-ordering before retrying.');
+  const payment = session.fault.payment;
+  const truth = await waitFor('Completed payment with notification before ledger', async () => {
+    const actual = await work('status', payment.payment_id);
+    if (!actual.processed_at || !actual.mailbox_delivered_at) return null;
+    return assertOrderingTruth(actual, true);
+  }, 30);
+  const instance = await monitored(client, session, active, payment, { allowViolations: true });
+  const result = await caseFile(client, session, active, instance);
+  session.fault.caseId = result.file.id;
+  session.fault.instanceId = instance.instance_id;
+  session.phase = 'Ordering violation verified';
+  save(sessionFile, session);
+  save(path.join(session.directory, 'receipts', `ordering-fault-${randomUUID()}.json`), {
+    at: new Date().toISOString(), runtime: session.runtime, active, payment, truth, instance, caseFile: result.file, member: result.member,
+  });
+  console.log(`PASS: payment completed and Clutta cited its ordering violation. ${caseLink(session, result.file.id)}`);
+  console.log('Next: ./lab repair payment-ordering. No cause diagnosis or historical resolution is claimed.');
+}
+
 async function repair(client, session) {
   await waitFor('Backlog drain', async () => (await work('status')).database.pending === 0, 30);
   console.log('Local recovery confirmed. Checking Clutta separately.');
   await validateAccount(client, session.workspaceId);
   const active = await activation(client, session);
+  if (scenario === 'payment-ordering') await healthyControls(client, session, active);
   const payment = await work('payment');
   const instance = await monitored(client, session, active, payment);
+  if (scenario === 'payment-ordering') assertOrderingTruth(await work('status', payment.payment_id), false);
   save(path.join(session.directory, 'receipts', `recovery-${randomUUID()}.json`), { at: new Date().toISOString(), payment, instance, priorFault: session.fault ?? null });
   session.previousFault = session.fault ?? null; session.fault = null; session.phase = 'Monitoring'; save(sessionFile, session);
   console.log(`PASS: backlog drained and a new monitored payment completed. ${instanceLink(session, instance.instance_id)}`);
-  console.log('The missed deadline remains in history. No automatic Case File resolution is claimed.');
-  console.log('Repeat: ./lab break. Finish safely: ./lab stop.');
+  console.log('The recorded violation remains in history. No automatic Case File resolution is claimed.');
+  console.log(`Repeat: ./lab break${scenarioSuffix}. Finish safely: ./lab stop${scenarioSuffix}.`);
 }
 
 async function stop(client, session) {
@@ -405,11 +487,13 @@ async function stop(client, session) {
 
 try {
   checkScriptInputs([command, ...args], dataRootInput);
-  if (args.length && !(args.length === 1 && args[0] === 'scheduler' && ['break', 'repair'].includes(command))) throw new Error('Unexpected arguments. Keys and IDs are entered through prompts, not command arguments.');
+  if (args.length && !(args.length === 1 && ((args[0] === 'scheduler' && ['break', 'repair'].includes(command)) ||
+      (args[0] === '--existing-flow' && command === 'start')))) throw new Error('Unexpected arguments. Keys and IDs are entered through prompts, not command arguments.');
   if (!['start', 'bootstrap', 'break', 'repair', 'status', 'stop', 'help'].includes(command ?? 'help')) throw new Error('Use ./lab start, break, repair, status, or stop.');
   if (!command || command === 'help') {
-    console.log('Clutta scheduler lab: ./lab start -> review and activate in the browser -> ./lab break -> ./lab repair');
-    console.log('Check: ./lab status. Finish safely: ./lab stop. Setup only: ./lab bootstrap.');
+    console.log(`Clutta ${scenarioLabel} lab: ./lab start${scenarioSuffix} -> review and activate in the browser -> ./lab break${scenarioSuffix} -> ./lab repair${scenarioSuffix}`);
+    console.log(`Check: ./lab status${scenarioSuffix}. Finish safely: ./lab stop${scenarioSuffix}. Setup only: ./lab bootstrap${scenarioSuffix}.`);
+    console.log(`Lost local state: ./lab start --existing-flow${scenarioSuffix}. Reuses an approved flow with fresh local state, not recovered evidence.`);
     process.exit(0);
   }
   requireLinuxWorkspace();
@@ -425,7 +509,7 @@ try {
   } else if (command === 'bootstrap') {
     const runtime = await freshRuntime();
     console.log(`Verified stable Clutta ${runtime.tag}; CLI, Scan digest, and matching Helm chart recorded.`);
-    console.log('Next: ./lab start. No credentials or Cloud evidence were sent by bootstrap.');
+    console.log(`Next: ./lab start${scenarioSuffix}. No credentials or Cloud evidence were sent by bootstrap.`);
   } else {
     if (command === 'stop') {
       const savedCloud = existsSync(sessionFile) ? owned(sessionFile) : null;
@@ -445,6 +529,7 @@ try {
     } else if (command === 'repair') {
       const session = state();
       if (session.stopped) throw new Error('This lab is stopped. Start a new run.');
+      if (scenario === 'payment-ordering') await work('order-off');
       await work('resume');
       const credentials = existsSync(credentialsFile) ? owned(credentialsFile) : null;
       if (!credentials || credentials.workspace_id !== session.workspaceId) throw new Error('Local scheduler resumed. Cloud verification requires the saved workspace credentials.');
@@ -456,7 +541,7 @@ try {
       const session = state();
       if (session.stopped) throw new Error('This lab is stopped. Use ./lab start for a new isolated run.');
       if (session.workspaceId !== credentials.workspace_id || session.projectId !== credentials.project_id) throw new Error('Saved account and active session differ. No operation was performed.');
-      if (command === 'break') await breakScheduler(client, session);
+      if (command === 'break') await (scenario === 'payment-ordering' ? breakOrdering(client, session) : breakScheduler(client, session));
       if (command === 'status') {
         await observe(client, session);
         const actual = await work('status');

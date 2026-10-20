@@ -11,7 +11,7 @@
 
 **The service is healthy. Did the work finish?**
 
-Run a small distributed application, let Clutta learn its workflow, and deliberately stop one step. Follow the evidence in your own Clutta account, then repair the application and watch new work complete.
+Run a small distributed application, let Clutta learn its workflow, then stop a step or reverse the order of two business events. Follow the evidence in your own Clutta account, repair the application, and verify fresh work.
 
 ## What you'll prove
 
@@ -96,7 +96,12 @@ The key is workspace-scoped, not project-scoped. Project routing does not narrow
 
 ## Scenarios and experiments
 
-The first runnable scenario is [payments and notification scheduling](scenarios/scheduler/README.md). The root `./lab` commands currently guide this scenario only.
+| Scenario | What it tests | Start |
+| --- | --- | --- |
+| [Notification scheduling](scenarios/scheduler/README.md) | A processed payment whose notification never arrives | `./lab start` |
+| [Payment ordering](scenarios/payment-ordering/README.md) | A completed payment whose notification arrives before its ledger entry | `./lab start payment-ordering` |
+
+Both run locally on Linux or in the same Codespace. Use a separate Clutta project for each. Their local data is isolated; the default scheduler commands are unchanged.
 
 More scenarios can live under `scenarios/<name>/`, each with its own workload, walkthrough, fault controls, and verification. New labs are added to this list only when their documented path has been tested.
 
@@ -104,7 +109,9 @@ More scenarios can live under `scenarios/<name>/`, each with its own workload, w
 - Fork the repository and explore the [workload](scenarios/scheduler/README.md). Commit changes before running; modified scenarios need their own validation.
 - Investigate a separate incident with focused, sanitized evidence in [Clutta Analyze](https://app.clutta.io/analyze). This is a one-time analysis, not live monitoring or Case File creation.
 
-This release covers one scheduler journey, not arbitrary workflows. Clutta establishes missing completion from a monitored contract; it does not label an unknown cause as a diagnosis. Fresh-account onboarding and rebuild/resume preservation remain open validation checks.
+These are controlled payment scenarios, not arbitrary workflows or production-scale benchmarks. Clutta checks the approved contract; it does not label an unknown cause as a diagnosis.
+
+Fresh-account onboarding and rebuild/resume preservation remain open validation checks.
 
 ## When you run into issues
 

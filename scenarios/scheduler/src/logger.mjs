@@ -19,12 +19,12 @@ export function committedRecord(role, payment) {
   };
 }
 
-export function createLogger(role, directory) {
+export function createLogger(role, directory, formatter = committedRecord) {
   if (!services[role]) throw new Error('Unknown service role');
   mkdirSync(directory, { recursive: true });
   const file = path.join(directory, `${role}.log`);
   return (payment) => {
-    const line = `${JSON.stringify(committedRecord(role, payment))}\n`;
+    const line = `${JSON.stringify(formatter(role, payment))}\n`;
     // The caller only invokes this after a successful database COMMIT.
     appendFileSync(file, line, { mode: 0o600 });
     process.stdout.write(line);

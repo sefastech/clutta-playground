@@ -100,6 +100,12 @@ The first runnable scenario is [payments and notification scheduling](scenarios/
 
 More scenarios can live under `scenarios/<name>/`, each with its own workload, walkthrough, fault controls, and verification. New labs are added to this list only when their documented path has been tested.
 
+**Scenario 2, in rehearsal:** [Agent answer delivery](scenarios/agent-delivery/README.md)
+uses LangGraph and a delivery worker to demonstrate a saved answer that never
+reaches its destination. Its local workload and fault controls are implemented;
+connected Clutta acceptance remains a separate gate. It does not use the root
+`./lab` scheduler commands.
+
 - Repeat the silent pause and repair to compare failed and completed runs.
 - Fork the repository and explore the [workload](scenarios/scheduler/README.md). Commit changes before running; modified scenarios need their own validation.
 - Investigate a separate incident with focused, sanitized evidence in [Clutta Analyze](https://app.clutta.io/analyze). This is a one-time analysis, not live monitoring or Case File creation.

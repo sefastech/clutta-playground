@@ -1,0 +1,69 @@
+x-application: &application
+  image: clutta-playground-agent-delivery:${SOURCE_REVISION:?Set SOURCE_REVISION}
+  init: true
+  user: "${LAB_UID:-1000}:${LAB_GID:-1000}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  environment: &environment
+    PGHOST: postgres
+    PGUSER: playground
+    PGDATABASE: clutta_agent_delivery_lab
+    AGENT_DELIVERY_DATA_ROOT: /lab
+    # Fixture model and sandbox delivery by default. The live demonstration opts in through a private,
+    # owner-only env file (AGENT_LIVE_ENV_FILE) holding the provider key, model ID and Telegram settings.
+    AGENT_MODEL_MODE: "${AGENT_MODEL_MODE:-fixture}"
+    AGENT_DELIVERY_MODE: "${AGENT_DELIVERY_MODE:-sandbox}"
+    SANDBOX_RATE_LIMIT_PERCENT: "${SANDBOX_RATE_LIMIT_PERCENT:-5}"
+    # External tracing would send lab data outside the scoped sources.
+    LANGSMITH_TRACING: "false"
+    LANGCHAIN_TRACING_V2: "false"
+  env_file:
+    - path: "${AGENT_LIVE_ENV_FILE:-./no-live-env}"
+      required: false
+  volumes:
+    - "${WORKLOAD_RUN_DIR:?Set WORKLOAD_RUN_DIR}/logs:/lab/logs"
+    # Fault records stay outside the watched logs folder.
+    - "${WORKLOAD_RUN_DIR}/control:/lab/control"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+    interval: 2s
+    timeout: 2s
+    retries: 20
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: playground
+      POSTGRES_DB: clutta_agent_delivery_lab
+      # Fake, local lab only. PostgreSQL is never published on a host port.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - "${WORKLOAD_RUN_DIR}/postgres:/var/lib/postgresql/data"
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U playground -d clutta_agent_delivery_lab"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  agent:
+    <<: *application
+    build:
+      context: .
+      args:
+        SOURCE_REVISION: "${SOURCE_REVISION}"
+    environment:
+      <<: *environment
+      SERVICE_ROLE: agent
+
+  delivery:
+    <<: *application
+    environment:
+      <<: *environment
+      SERVICE_ROLE: delivery

@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// Application ground truth for the agent delivery scenario. This helper never
+// connects to Clutta, approves a flow, or reports a Clutta finding.
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkScriptInputs, trimInput } from '../scheduler/src/input.mjs';
+import { requireLinuxWorkspace } from '../../lib/workspace.mjs';
+import { sourceRevision } from '../../lib/source.mjs';
+
+const scenario = path.dirname(fileURLToPath(import.meta.url));
+const repository = path.resolve(scenario, '../..');
+const dataRootInput = trimInput(process.env.CLUTTA_AGENT_DELIVERY_DATA_ROOT);
+const base = path.resolve(dataRootInput ?? path.join(homedir(), 'sanitized-cases/clutta-agent-delivery'));
+const activeFile = path.join(base, 'active-workload.json');
+const [command, ...args] = process.argv.slice(2).map(trimInput);
+
+function protectDirectory(directory) {
+  if (directory === path.parse(directory).root || directory === homedir() ||
+      directory === repository || directory.startsWith(`${repository}${path.sep}`)) {
+    throw new Error('Choose an isolated data directory outside the checkout and home root');
+  }
+}
+
+function run(program, arguments_, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, arguments_, { stdio: 'inherit', ...options });
+    child.once('error', reject);
+    child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(code === 75
+      ? 'Another start/stop operation owns this data directory. Wait for it to finish and retry.' : `${program} exited with ${code}`)));
+  });
+}
+
+function readState() {
+  const state = JSON.parse(readFileSync(activeFile, 'utf8'));
+  const expected = path.join(realpathSync(base), state.project ?? 'invalid');
+  if (!/^clutta-agent-delivery-[a-f0-9]{12}$/.test(state.project) || state.directory !== expected ||
+      realpathSync(state.directory) !== expected || !/^[a-f0-9]{40}$/.test(state.sourceRevision)) {
+    throw new Error('Workload session does not identify a valid owned directory and project');
+  }
+  return state;
+}
+
+const saveState = (state) => writeFileSync(activeFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+
+function compose(state, arguments_) {
+  return run('docker', ['compose', '--project-name', state.project, '--file', path.join(scenario, 'compose.yaml'), ...arguments_], {
+    env: {
+      ...process.env, WORKLOAD_RUN_DIR: state.directory, SOURCE_REVISION: state.sourceRevision,
+      LAB_UID: String(process.getuid?.() ?? 1000), LAB_GID: String(process.getgid?.() ?? 1000),
+    },
+  });
+}
+
+try {
+  checkScriptInputs([command, ...args], dataRootInput);
+  protectDirectory(base);
+  const maximumArguments = { start: 0, stop: 0, request: 0, break: 0, repair: 0, status: 1, traffic: 2 };
+  if (command in maximumArguments && args.length > maximumArguments[command]) {
+    throw new Error(`Unexpected arguments for ${command}; no operation was performed`);
+  }
+  if (['start', 'stop'].includes(command) && process.env.CLUTTA_AGENT_WORKLOAD_LOCK_HELD !== base) {
+    requireLinuxWorkspace();
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    protectDirectory(realpathSync(base));
+    await run('flock', ['--nonblock', '--conflict-exit-code', '75', path.join(base, 'operation.lock'),
+      process.execPath, fileURLToPath(import.meta.url), command, ...args],
+    { env: { ...process.env, CLUTTA_AGENT_WORKLOAD_LOCK_HELD: base } });
+    process.exit(0);
+  }
+  if (command === 'start') {
+    mkdirSync(base, { recursive: true, mode: 0o700 });
+    protectDirectory(realpathSync(base));
+    let state = existsSync(activeFile) ? readState() : null;
+    const revision = await sourceRevision(repository);
+    if (state && !state.stopped && state.sourceRevision !== revision) {
+      throw new Error('Source revision changed during this run. Stop it first; a new start preserves the old data.');
+    }
+    if (!state || state.stopped) {
+      const project = `clutta-agent-delivery-${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const directory = path.join(realpathSync(base), project);
+      mkdirSync(directory, { mode: 0o700 });
+      for (const folder of ['logs', 'control', 'postgres', 'receipts']) mkdirSync(path.join(directory, folder), { mode: 0o700 });
+      // Scan refuses an empty watched folder; create the two watched files up front.
+      for (const file of ['agent.log', 'delivery.log']) closeSync(openSync(path.join(directory, 'logs', file), 'a', 0o600));
+      state = { project, directory, sourceRevision: revision, createdAt: new Date().toISOString(), stopped: false };
+      saveState(state);
+    }
+    console.log(`Workload-only run: ${state.directory}`);
+    console.log('Synthetic lab requests. Fixture/sandbox are the defaults; explicit provider settings opt into live mode.');
+    console.log('This starts the workload only. Clutta connection and findings must be verified separately.');
+    await compose(state, ['build', '--pull', 'agent']);
+    await compose(state, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', '120', 'agent', 'delivery']);
+    console.log(`Watch only these two files: ${path.join(state.directory, 'logs', 'agent.log')} and ${path.join(state.directory, 'logs', 'delivery.log')}`);
+  } else if (['traffic', 'request', 'status', 'break', 'repair', 'stop'].includes(command)) {
+    const state = readState();
+    if (state.stopped) throw new Error('This session is stopped; use start for a new isolated run');
+    if (command === 'stop') {
+      await compose(state, ['down', '--timeout', '15']);
+      saveState({ ...state, stopped: true });
+      console.log(`Stopped only ${state.project}. Logs and database files remain in ${state.directory}`);
+    } else {
+      await compose(state, ['exec', '-T', 'agent', 'node', 'scripts/client.mjs', command, ...args]);
+    }
+  } else {
+    console.log('Usage: scenarios/agent-delivery/workload start | traffic [count] [rate] | request | status [answer-id] | break | repair | stop');
+    console.log('This controls the sample workload only, not Clutta learning, activation, or Case Files.');
+    if (command) process.exitCode = 1;
+  }
+} catch (error) {
+  console.error(`Workload check failed: ${error.message}`);
+  process.exitCode = 1;
+}

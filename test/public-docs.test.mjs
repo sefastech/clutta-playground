@@ -84,7 +84,9 @@ test('the public package identity and MIT notice agree while branded assets stay
 test('the catalogue admits future scenarios without promising unvalidated runtime support', () => {
   const readme = read('README.md');
   assert.match(readme, /scenarios\/<name>\//);
-  assert.match(readme, /commands currently guide this scenario only/);
+  assert.match(readme, /scenarios\/payment-ordering\/README\.md/);
+  assert.match(readme, /`\.\/lab start payment-ordering`/);
+  assert.match(readme, /default scheduler commands are unchanged/);
   assert.match(readme, /Fresh-account onboarding and rebuild\/resume preservation remain open/);
   assert.match(read('AGENTS.md'), /independently checked Clutta path before it is listed as runnable/);
 });

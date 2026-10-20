@@ -8,10 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { checkScriptInputs, trimInput } from './scenarios/scheduler/src/input.mjs';
 import { requireLinuxWorkspace } from './lib/workspace.mjs';
 import { sourceRevision } from './lib/source.mjs';
+import { scenarioName, scenarioRoot } from './lib/scenario.mjs';
 
 const repository = path.dirname(fileURLToPath(import.meta.url));
 const dataRootInput = trimInput(process.env.CLUTTA_PLAYGROUND_DATA_ROOT);
-const base = path.resolve(dataRootInput ?? path.join(homedir(), 'sanitized-cases/clutta-playground'));
+const scenario = scenarioName(process.env.CLUTTA_PLAYGROUND_SCENARIO);
+const base = path.resolve(dataRootInput ?? scenarioRoot(path.join(homedir(), 'sanitized-cases/clutta-playground'), scenario));
 const activeFile = path.join(base, 'active-workload.json');
 const [command, ...args] = process.argv.slice(2).map(trimInput);
 
@@ -46,7 +48,7 @@ async function capture(program, arguments_, options = {}) {
 function readState() {
   const state = JSON.parse(readFileSync(activeFile, 'utf8'));
   const expected = path.join(realpathSync(base), state.project ?? 'invalid');
-  if (!/^clutta-playground-[a-f0-9]{12}$/.test(state.project) || state.directory !== expected ||
+  if ((state.scenario ?? 'scheduler') !== scenario || !/^clutta-playground-[a-f0-9]{12}$/.test(state.project) || state.directory !== expected ||
       realpathSync(state.directory) !== expected || !/^[a-f0-9]{40}$/.test(state.sourceRevision)) {
     throw new Error('Workload session does not identify a valid owned directory and project');
   }
@@ -55,7 +57,8 @@ function readState() {
 
 function compose(state, arguments_, { captured = false, identity } = {}) {
   return (captured ? capture : run)('docker', ['compose', '--project-name', state.project,
-    '--file', path.join(repository, 'scenarios/scheduler/compose.yaml'), ...arguments_], {
+    '--file', path.join(repository, 'scenarios/scheduler/compose.yaml'),
+    ...(scenario === 'payment-ordering' ? ['--file', path.join(repository, 'scenarios/payment-ordering/compose.yaml')] : []), ...arguments_], {
     env: {
       ...process.env, WORKLOAD_RUN_DIR: state.directory, SOURCE_REVISION: state.sourceRevision,
       LAB_UID: String(process.getuid?.() ?? 1000), LAB_GID: String(process.getgid?.() ?? 1000),
@@ -88,7 +91,8 @@ function saveState(state) {
 try {
   checkScriptInputs([command, ...args], dataRootInput);
   protectDirectory(base);
-  const maximumArguments = { start: 0, verify: 0, stop: 0, pause: 0, resume: 0, payment: 0, status: 1, traffic: 2 };
+  const maximumArguments = { start: 0, verify: 0, stop: 0, pause: 0, resume: 0, payment: 0, status: 1, traffic: 2, 'order-on': 0, 'order-off': 0 };
+  if (scenario !== 'payment-ordering' && ['order-on', 'order-off'].includes(command)) throw new Error('Ordering controls require the payment-ordering scenario');
   if (command in maximumArguments && args.length > maximumArguments[command]) {
     throw new Error(`Unexpected arguments for ${command}; no operation was performed`);
   }
@@ -114,7 +118,7 @@ try {
       const directory = path.join(realpathSync(base), project);
       mkdirSync(directory, { mode: 0o700 });
       for (const folder of ['logs', 'postgres', 'receipts']) mkdirSync(path.join(directory, folder), { mode: 0o700 });
-      state = { project, directory, sourceRevision: revision, createdAt: new Date().toISOString(), stopped: false };
+      state = { project, directory, scenario, sourceRevision: revision, createdAt: new Date().toISOString(), stopped: false };
       saveState(state);
     }
     console.log(`Workload-only run: ${state.directory}`);
@@ -122,7 +126,7 @@ try {
     await compose(state, ['build', '--pull', 'api']);
     await compose(state, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', '120', 'api', 'worker', 'scheduler']);
     console.log('Services started. Use ./workload verify on this fresh run to test real completion and silent failure.');
-  } else if (['traffic', 'payment', 'status', 'pause', 'resume', 'verify', 'stop'].includes(command)) {
+  } else if (['traffic', 'payment', 'status', 'pause', 'resume', 'verify', 'stop', 'order-on', 'order-off'].includes(command)) {
     const state = readState();
     if (state.stopped) throw new Error('This session is stopped; use ./workload start for a new isolated run');
     if (command === 'verify') {

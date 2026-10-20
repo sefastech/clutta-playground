@@ -465,3 +465,23 @@ test('Case membership uses canonical step position rather than JSON array order 
   active.definition.steps = [active.definition.steps[2], active.definition.steps[0], active.definition.steps[1]];
   assertCaseMember(member(), instanceId, active, state, paymentId);
 });
+
+test('ordering proof still requires complete owned business evidence and the correct violation', () => {
+  const scoped = { ...state, scenario: 'payment-ordering' };
+  const value = instance();
+  for (const [index, event] of ['payment.accepted', 'ledger.recorded', 'merchant.notified'].entries()) {
+    const evidence = value.lineage.observations[index].match.evidence;
+    evidence.raw = JSON.stringify({ ...JSON.parse(evidence.raw), event });
+  }
+  value.lineage.violations = [{ kind: 'out_of_order' }];
+  assert.throws(() => assertInstance(value, paymentId, activation(), scoped));
+  assertInstance(value, paymentId, activation(), scoped, { allowViolations: true });
+  assert.throws(() => assertInstance(value, otherId, activation(), scoped, { allowViolations: true }));
+  const hit = member();
+  hit.violation.kind = 'out_of_order';
+  hit.violation.expected_signature_id = 'step-worker';
+  assertCaseMember(hit, instanceId, activation(), scoped, paymentId);
+  for (const patch of [{ kind: 'missing_step' }, { expected_signature_id: 'step-scheduler' }, { project_id: otherId }, { source_health: 'unknown' }, { occurred_at_ms: 0 }]) {
+    assert.throws(() => assertCaseMember({ ...hit, violation: { ...hit.violation, ...patch } }, instanceId, activation(), scoped, paymentId));
+  }
+});

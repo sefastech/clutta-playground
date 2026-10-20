@@ -33,11 +33,11 @@ async function readBody(request) {
   try { return JSON.parse(text); } catch { throw new Error('Payment must contain valid JSON'); }
 }
 
-export function createService({ role, pool, record }) {
+export function createService({ role, pool, record, operations = { acceptPayment, processNextPayment, deliverNextNotification, paymentStatus, summary }, control }) {
   if (!services[role]) throw new Error('Unknown service role');
   let loop = null;
   if (role !== 'api') {
-    const operation = role === 'worker' ? processNextPayment : deliverNextNotification;
+    const operation = role === 'worker' ? operations.processNextPayment : operations.deliverNextNotification;
     loop = new ProcessingLoop(async () => {
       const payment = await operation(pool);
       if (!payment) return false;
@@ -49,6 +49,9 @@ export function createService({ role, pool, record }) {
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://lab.invalid');
+      if (role === 'api' && control && request.method === 'POST' && ['/control/order-on', '/control/order-off'].includes(url.pathname)) {
+        return reply(response, 200, await control(pool, url.pathname.endsWith('order-on')));
+      }
       if (request.method === 'GET' && url.pathname === '/health') {
         return reply(response, 200, { status: 'ok', service: services[role] });
       }
@@ -71,17 +74,17 @@ export function createService({ role, pool, record }) {
         let payment;
         try { payment = validatePayment(await readBody(request)); }
         catch (error) { return reply(response, 400, { error: error.message }); }
-        const result = await acceptPayment(pool, payment);
+        const result = await operations.acceptPayment(pool, payment);
         if (result.created) record(result.payment);
         return reply(response, result.created ? 201 : 200, { payment_id: result.payment.payment_id, replay: !result.created });
       }
       if (role === 'api' && request.method === 'GET' && url.pathname === '/summary') {
-        return reply(response, 200, await summary(pool));
+        return reply(response, 200, await operations.summary(pool));
       }
       if (role === 'api' && request.method === 'GET' && url.pathname.startsWith('/payments/')) {
         const paymentId = url.pathname.slice('/payments/'.length);
         if (!uuid.test(paymentId)) return reply(response, 400, { error: 'Invalid payment identifier' });
-        const payment = await paymentStatus(pool, paymentId);
+        const payment = await operations.paymentStatus(pool, paymentId);
         return reply(response, payment ? 200 : 404, payment ?? { error: 'Payment not found' });
       }
       reply(response, 404, { error: 'Route not found' });
@@ -115,8 +118,9 @@ export function createService({ role, pool, record }) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const role = process.env.SERVICE_ROLE;
   const pool = createPool();
-  const record = createLogger(role, process.env.LOG_DIRECTORY ?? '/lab/logs');
-  const service = createService({ role, pool, record });
+  const ordering = process.env.LAB_SCENARIO === 'payment-ordering' ? await import('../../payment-ordering/src/store.mjs') : null;
+  const record = createLogger(role, process.env.LOG_DIRECTORY ?? '/lab/logs', ordering?.committedRecord);
+  const service = createService({ role, pool, record, ...(ordering ? { operations: ordering, control: ordering.setFault } : {}) });
   try {
     await service.start();
     for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, async () => {

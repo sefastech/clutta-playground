@@ -57,7 +57,7 @@ export async function startCodespace({ execute = execFileSync, log = console.log
   ]) {
     execute(program, args, args.includes('bootstrap') ? { ...options, timeout: 600000 } : options);
   }
-  log('Ready for setup: run ./lab start in the terminal. Use your own Clutta account and workspace key.');
+  log('Ready for setup: run ./lab start for notification scheduling, or ./lab start payment-ordering. Use your own Clutta account and workspace key.');
 }
 
 export async function runCodespaceStartup({ lifecycle = false, report = console.error, ...options } = {}) {

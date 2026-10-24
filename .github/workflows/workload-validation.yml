@@ -13,6 +13,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  agent-delivery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: playground
+          POSTGRES_DB: clutta_agent_delivery_lab
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U playground -d clutta_agent_delivery_lab"
+          --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: playground
+      PGDATABASE: clutta_agent_delivery_lab
+    defaults:
+      run:
+        working-directory: scenarios/agent-delivery
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Graph, sandbox, transport, and syntax contracts
+        run: |
+          npm test
+          npm run check
+      - name: Real PostgreSQL transaction and worker contracts
+        run: AGENT_TEST_REAL_PG=1 npm test
+      - name: Dependency audit
+        run: npm audit --omit=dev
   workload:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
